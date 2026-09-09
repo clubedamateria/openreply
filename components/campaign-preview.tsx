@@ -10,6 +10,8 @@
  * the identical frame so switching tabs never resizes the phone.
  */
 
+import { Smartphone } from "lucide-react";
+
 export type PreviewTab = "post" | "comments" | "dm" | "dmTrigger";
 
 interface CampaignPreviewProps {
@@ -162,10 +164,10 @@ function Phone({ children }: { children: React.ReactNode }) {
       <span className={`${btn} -right-[2px] left-auto top-[150px] h-20 bg-gradient-to-l`} />
       <span className={`${btn} -right-[2px] left-auto top-[250px] h-9 bg-gradient-to-l`} />
 
-      {/* Titanium frame → black bezel → screen */}
-      <div className="relative rounded-[3rem] bg-gradient-to-br from-zinc-500 via-zinc-700 to-zinc-600 p-[3px] shadow-2xl">
-        <div className="rounded-[2.85rem] bg-black p-[9px]">
-          <div className="relative h-[640px] overflow-hidden rounded-[2.3rem] bg-black">
+      {/* Titanium frame, black bezel, screen */}
+      <div className="relative rounded-[28px] bg-gradient-to-br from-zinc-500 via-zinc-700 to-zinc-600 p-[3px] shadow-2xl">
+        <div className="rounded-[26px] bg-black p-[9px]">
+          <div className="relative h-[640px] overflow-hidden rounded-[20px] bg-black">
             {/* Dynamic Island */}
             <div className="absolute left-1/2 top-2 z-20 h-6 w-24 -translate-x-1/2 rounded-full bg-black" />
             {children}
@@ -490,7 +492,18 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
     tab === "dmTrigger" && !props.dmTriggerEnabled ? "dm" : tab;
 
   return (
-    <div className="flex flex-col items-center gap-5">
+    <div className="card flex flex-col gap-4 p-4 sm:p-5">
+      <header className="flex items-center gap-3">
+        <span className="icon-tile bg-sun-soft text-warning">
+          <Smartphone size={20} aria-hidden />
+        </span>
+        <div>
+          <h2 className="text-sm font-extrabold text-foreground">Prévia</h2>
+          <p className="text-xs text-muted">Como a pessoa vê no Instagram</p>
+        </div>
+      </header>
+
+      <div className="flex justify-center">
       <Phone>
         {activeTab === "post" && (
           <PostScreen
@@ -554,16 +567,23 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
           />
         )}
       </Phone>
+      </div>
 
-      <div className="inline-flex rounded-full bg-surface p-1">
+      <div
+        role="tablist"
+        aria-label="Tela da prévia"
+        className="flex flex-wrap justify-center gap-1 rounded-full bg-surface-hover p-1"
+      >
         {tabs.map((t) => (
           <button
             key={t.key}
             type="button"
+            role="tab"
+            aria-selected={activeTab === t.key}
             onClick={() => onTabChange(t.key)}
-            className={`rounded-full px-4 py-1.5 text-sm transition-colors ${
+            className={`min-h-[44px] rounded-full px-4 text-sm font-bold transition-colors ${
               activeTab === t.key
-                ? "bg-background font-medium text-foreground ring-1 ring-accent/40"
+                ? "bg-surface text-brand shadow-[var(--shadow-card)]"
                 : "text-muted hover:text-foreground"
             }`}
           >

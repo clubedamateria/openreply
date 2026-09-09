@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState, useCallback } from "react";
+import { ChevronLeft, ChevronRight, ClipboardList, Search } from "lucide-react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import StatusBadge from "@/components/status-badge";
 
@@ -39,6 +40,16 @@ const STATUS_FILTERS = [
   "SKIPPED_DEDUP",
 ];
 
+const STATUS_LABELS: Record<string, string> = {
+  ALL: "Todos",
+  SENT: "Enviados",
+  FAILED: "Falhas",
+  PENDING: "Pendentes",
+  SKIPPED_RATE_LIMIT: "Limite de taxa",
+  SKIPPED_PLAN_LIMIT: "Limite do plano",
+  SKIPPED_DEDUP: "Duplicados",
+};
+
 export default function LogsPage() {
   const [logs, setLogs] = useState<DmLog[]>([]);
   const [pagination, setPagination] = useState<Pagination | null>(null);
@@ -47,6 +58,8 @@ export default function LogsPage() {
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("all");
   const [page, setPage] = useState(1);
+  // Client-side text filter over the current page (commenter, comment, campaign).
+  const [query, setQuery] = useState("");
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -97,105 +110,154 @@ export default function LogsPage() {
     setPage(1);
   }
 
+  const q = query.trim().toLowerCase();
+  const visibleLogs = q
+    ? logs.filter((log) =>
+        [
+          log.commenterName ?? log.commenterId,
+          log.commentText,
+          log.automation.name,
+          log.instagramAccount.username,
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
+      )
+    : logs;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
+      <div>
+        <h1 className="text-xl font-extrabold text-brand">Registros de DM</h1>
+        <p className="helper">Cada comentário que virou (ou tentou virar) uma mensagem direta.</p>
+      </div>
+
       {/* Filters */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="flex flex-wrap gap-2">
-          {STATUS_FILTERS.map((status) => (
-            <button
-              key={status}
-              onClick={() => handleFilterChange(status)}
-              className={`
-                px-3 py-1.5 rounded-lg text-xs font-medium transition-all
-                ${
-                  statusFilter === status
-                    ? "bg-accent/15 text-accent border border-accent/20"
-                    : "bg-surface text-muted border border-border hover:border-border-hover hover:text-foreground"
-                }
-              `}
-            >
-              {status === "ALL"
-                ? "Todos"
-                : status === "SENT"
-                  ? "Enviados"
-                  : status === "FAILED"
-                    ? "Falhas"
-                    : status === "PENDING"
-                      ? "Pendentes"
-                      : status === "SKIPPED_RATE_LIMIT"
-                        ? "Limite de taxa"
-                        : status === "SKIPPED_PLAN_LIMIT"
-                          ? "Limite do plano"
-                          : "Duplicados"}
-            </button>
-          ))}
+      <div className="card space-y-4 p-4">
+        <div>
+          <span className="label">Status</span>
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por status">
+            {STATUS_FILTERS.map((status) => {
+              const isActive = statusFilter === status;
+              return (
+                <button
+                  key={status}
+                  type="button"
+                  onClick={() => handleFilterChange(status)}
+                  aria-pressed={isActive}
+                  className={`btn btn-sm ${isActive ? "btn-brand" : "btn-secondary"}`}
+                >
+                  {STATUS_LABELS[status] ?? status}
+                </button>
+              );
+            })}
+          </div>
         </div>
-        {accounts.length > 1 && (
-          <AccountSelect
-            accounts={accounts}
-            value={selectedAccountId}
-            onChange={handleAccountChange}
-          />
-        )}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <label htmlFor="logs-search" className="label">
+              Buscar
+            </label>
+            <div className="relative">
+              <Search
+                size={18}
+                aria-hidden="true"
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted"
+              />
+              <input
+                id="logs-search"
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Comentarista, comentário ou campanha…"
+                className="field pl-10"
+              />
+            </div>
+          </div>
+          {accounts.length > 1 && (
+            <AccountSelect
+              accounts={accounts}
+              value={selectedAccountId}
+              onChange={handleAccountChange}
+            />
+          )}
+        </div>
       </div>
 
       {/* Table */}
-      <div className="panel rounded overflow-hidden">
+      <div className="card overflow-hidden">
         {/* Six columns don't fit a phone; the table keeps its width and scrolls
-            horizontally inside the panel rather than crushing every cell. */}
+            horizontally inside the card rather than crushing every cell. */}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-sm">
             <thead>
-              <tr className="border-b border-border text-left">
-                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Comentarista</th>
-                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Comentário</th>
-                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Campanha</th>
-                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Conta</th>
-                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Status</th>
-                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">Horário</th>
+              <tr className="border-b border-border bg-surface-hover/60 text-left">
+                <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted sm:px-6">Comentarista</th>
+                <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted sm:px-6">Comentário</th>
+                <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted sm:px-6">Campanha</th>
+                <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted sm:px-6">Conta</th>
+                <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted sm:px-6">Status</th>
+                <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted sm:px-6">Horário</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loading && (
                 <>
                   {[...Array(5)].map((_, i) => (
-                    <tr key={i}>
+                    <tr key={i} aria-busy="true">
                       <td colSpan={6} className="px-4 py-4 sm:px-6">
-                        <div className="h-4 bg-surface-hover rounded" />
+                        <div className="skeleton h-4 w-full" />
                       </td>
                     </tr>
                   ))}
                 </>
               )}
-              {!loading && logs.length === 0 && (
+              {!loading && visibleLogs.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-muted sm:px-6">
-                    Nenhum registro encontrado
+                  <td colSpan={6} className="px-4 py-12 sm:px-6">
+                    <div className="flex flex-col items-center gap-2 text-center">
+                      <span className="icon-tile bg-sun-soft text-warning">
+                        <ClipboardList size={20} aria-hidden="true" />
+                      </span>
+                      <p className="text-sm text-muted">
+                        {q ? "Nenhum registro corresponde à busca" : "Nenhum registro encontrado"}
+                      </p>
+                      {q && (
+                        <button
+                          type="button"
+                          onClick={() => setQuery("")}
+                          className="btn btn-sm btn-secondary"
+                        >
+                          Limpar busca
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               )}
               {!loading &&
-                logs.map((log) => (
-                  <tr key={log.id} className="hover:bg-surface-hover/50 transition-colors">
-                    <td className="px-4 py-4 sm:px-6">
-                      <span className="font-medium text-foreground">
+                visibleLogs.map((log) => (
+                  <tr key={log.id} className="transition-colors hover:bg-surface-hover">
+                    <td className="px-4 py-3 sm:px-6">
+                      <span className="font-bold text-foreground">
                         @{log.commenterName ?? log.commenterId.slice(0, 8)}
                       </span>
                     </td>
-                    <td className="px-4 py-4 max-w-[200px] sm:px-6">
-                      <span className="text-muted truncate block">{log.commentText}</span>
+                    <td className="max-w-[200px] px-4 py-3 sm:px-6">
+                      <span className="block truncate text-muted" title={log.commentText}>
+                        {log.commentText}
+                      </span>
                     </td>
-                    <td className="px-4 py-4 sm:px-6">
+                    <td className="px-4 py-3 sm:px-6">
                       <span className="text-muted">{log.automation.name}</span>
                     </td>
-                    <td className="px-4 py-4 sm:px-6">
+                    <td className="px-4 py-3 sm:px-6">
                       <span className="text-muted">@{log.instagramAccount.username}</span>
                     </td>
-                    <td className="px-4 py-4 sm:px-6">
+                    <td className="px-4 py-3 sm:px-6">
                       <StatusBadge status={log.status} />
                     </td>
-                    <td className="px-4 py-4 text-muted whitespace-nowrap sm:px-6">
+                    <td className="whitespace-nowrap px-4 py-3 text-muted sm:px-6">
                       {new Date(log.createdAt).toLocaleString("pt-BR", {
                         month: "short",
                         day: "numeric",
@@ -211,7 +273,7 @@ export default function LogsPage() {
 
         {/* Pagination */}
         {pagination && pagination.totalPages > 1 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 border-t border-border sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3 sm:px-6">
             <p className="text-xs text-muted">
               Mostrando {(pagination.page - 1) * pagination.limit + 1} a{" "}
               {Math.min(pagination.page * pagination.limit, pagination.total)} de{" "}
@@ -219,27 +281,31 @@ export default function LogsPage() {
             </p>
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 disabled={page <= 1}
                 onClick={() => {
                   setLoading(true);
                   setPage(page - 1);
                 }}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted border border-border hover:text-foreground hover:border-border-hover transition-all disabled:opacity-30 disabled:pointer-events-none"
+                className="btn btn-sm btn-secondary"
               >
+                <ChevronLeft size={16} aria-hidden="true" />
                 Anterior
               </button>
-              <span className="text-xs text-muted px-2">
+              <span className="px-2 text-xs font-bold text-muted">
                 {page} / {pagination.totalPages}
               </span>
               <button
+                type="button"
                 disabled={page >= pagination.totalPages}
                 onClick={() => {
                   setLoading(true);
                   setPage(page + 1);
                 }}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted border border-border hover:text-foreground hover:border-border-hover transition-all disabled:opacity-30 disabled:pointer-events-none"
+                className="btn btn-sm btn-secondary"
               >
                 Próxima
+                <ChevronRight size={16} aria-hidden="true" />
               </button>
             </div>
           </div>

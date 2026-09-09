@@ -7,9 +7,13 @@
  */
 
 import { usePathname } from "next/navigation";
+import { AtSign, Menu } from "lucide-react";
 
 const pageTitles: Record<string, string> = {
   "/dashboard": "Painel",
+  "/funil": "Funil",
+  "/overview": "Visão geral",
+  "/inbox": "Caixa de entrada",
   "/campaigns": "Campanhas",
   "/campaigns/new": "Nova campanha",
   "/automations": "Campanhas",
@@ -35,7 +39,7 @@ export default function TopBar({
 
   return (
     <header
-      className="sticky top-0 z-30 flex items-center justify-between gap-3 px-4 lg:px-8 border-b border-border bg-background"
+      className="sticky top-0 z-30 flex items-center justify-between gap-3 px-4 lg:px-8 border-b border-border bg-surface"
       // Installed to the home screen the app starts at the very top of the
       // display, so without this the title sits under the clock and battery.
       // The inset is 0 in a browser tab and on desktop.
@@ -46,26 +50,33 @@ export default function TopBar({
     >
       <div className="flex min-w-0 items-center gap-3 sm:gap-4">
         <button
+          type="button"
           onClick={onMenuClick}
-          className="lg:hidden shrink-0 px-2.5 py-1.5 rounded border border-border text-sm text-muted hover:text-foreground"
-          aria-label="Abrir ou fechar menu lateral"
+          className="lg:hidden btn btn-secondary shrink-0 !px-2.5 min-w-[44px]"
+          aria-label="Abrir menu lateral"
         >
-          Menu
+          <Menu size={20} aria-hidden="true" />
         </button>
-        <h1 className="truncate text-base font-semibold sm:text-lg">{title}</h1>
+        <h1 className="truncate text-lg font-extrabold text-brand sm:text-xl">
+          {title}
+        </h1>
       </div>
 
       {instagramAccountCount > 0 ? (
-        <p className="shrink-0 truncate text-sm text-muted">
-          {instagramAccountCount > 1
-            ? `${instagramAccountCount} contas`
-            : `@${instagramUsername}`}
-        </p>
+        <span className="badge badge-info shrink-0 max-w-[50vw]">
+          <AtSign size={14} aria-hidden="true" />
+          <span className="truncate">
+            {instagramAccountCount > 1
+              ? `${instagramAccountCount} contas`
+              : `@${instagramUsername}`}
+          </span>
+        </span>
       ) : (
         <a
           href="/api/instagram/connect"
-          className="shrink-0 whitespace-nowrap text-sm font-medium px-3 py-1.5 rounded bg-accent text-white hover:bg-accent-hover"
+          className="btn btn-primary btn-sm shrink-0 whitespace-nowrap min-h-[44px]"
         >
+          <AtSign size={18} aria-hidden="true" />
           {/* Full label needs more room than a 360px header has to spare. */}
           <span className="sm:hidden">Conectar</span>
           <span className="hidden sm:inline">Conectar Instagram</span>

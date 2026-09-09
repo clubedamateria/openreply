@@ -151,7 +151,7 @@ export async function GET(request: NextRequest) {
     }),
   ]);
 
-  const dailyDMs: { date: string; count: number }[] = [];
+  const dailyDMs: { date: string; isoDate: string; count: number }[] = [];
   for (let i = 6; i >= 0; i--) {
     const dayStart = new Date(todayStart);
     dayStart.setDate(dayStart.getDate() - i);
@@ -169,6 +169,7 @@ export async function GET(request: NextRequest) {
 
     dailyDMs.push({
       date: dayStart.toLocaleDateString("en-US", { weekday: "short" }),
+      isoDate: dayStart.toISOString().slice(0, 10),
       count,
     });
   }

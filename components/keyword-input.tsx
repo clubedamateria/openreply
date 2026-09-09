@@ -7,6 +7,7 @@
  */
 
 import { useState, type KeyboardEvent } from "react";
+import { X } from "lucide-react";
 
 interface KeywordInputProps {
   keywords: string[];
@@ -42,33 +43,33 @@ export default function KeywordInput({ keywords, onChange, max = 10 }: KeywordIn
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-2 p-3 rounded bg-surface border border-border min-h-[48px]">
-        {keywords.map((keyword) => (
-          <span
-            key={keyword}
-            className="inline-flex items-center gap-2 px-2 py-1 rounded border border-border text-xs"
-          >
-            {keyword}
-            <button
-              type="button"
-              onClick={() => removeKeyword(keyword)}
-              aria-label={`Remover ${keyword}`}
-              className="text-muted hover:text-error"
-            >
-              Remover
-            </button>
-          </span>
-        ))}
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={keywords.length === 0 ? "Digite a palavra-chave e pressione Enter..." : ""}
-          className="flex-1 min-w-[120px] bg-transparent text-sm text-foreground placeholder:text-zinc-500 outline-none"
-        />
-      </div>
-      <p className="text-xs text-muted">
+      {keywords.length > 0 && (
+        <ul className="flex flex-wrap gap-2" aria-label="Palavras-chave adicionadas">
+          {keywords.map((keyword) => (
+            <li key={keyword} className="badge badge-accent pr-1">
+              {keyword}
+              <button
+                type="button"
+                onClick={() => removeKeyword(keyword)}
+                aria-label={`Remover ${keyword}`}
+                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-accent-hover transition-colors hover:bg-accent hover:text-white"
+              >
+                <X size={12} strokeWidth={3} aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <input
+        type="text"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder="Digite a palavra-chave e pressione Enter..."
+        aria-label="Nova palavra-chave"
+        className="field"
+      />
+      <p className="helper">
         {keywords.length}/{max} palavras-chave · Pressione Enter ou vírgula para adicionar
       </p>
     </div>

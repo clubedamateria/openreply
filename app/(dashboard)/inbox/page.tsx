@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, MessageCircle, Send } from "lucide-react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import { readCache, writeCache } from "@/lib/client-cache";
 import type { ConversationListItem } from "@/app/api/instagram/conversations/route";
@@ -257,9 +258,12 @@ export default function InboxPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-end justify-between gap-4">
-        <h1 className="text-lg font-semibold text-foreground">Caixa de entrada</h1>
+    <div className="space-y-4 animate-fade-in">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-extrabold text-brand">Caixa de entrada</h1>
+          <p className="helper">Leia e responda as mensagens diretas da sua conta.</p>
+        </div>
         {accounts.length > 1 && (
           <AccountSelect
             accounts={accounts}
@@ -270,85 +274,123 @@ export default function InboxPage() {
         )}
       </div>
 
-      <div className="grid h-[calc(100dvh-11rem)] grid-cols-1 overflow-hidden rounded border border-border sm:grid-cols-[300px_1fr]">
+      <div className="grid h-[calc(100dvh-12rem)] min-h-[420px] grid-cols-1 gap-4 sm:grid-cols-[300px_1fr] lg:grid-cols-[340px_1fr]">
         {/* Conversation list. On mobile it takes the full pane and is hidden
             once a thread is open (ManyChat-style); on sm+ it is always shown. */}
-        <div
-          className={`min-h-0 flex-col border-b border-border sm:flex sm:border-b-0 sm:border-r ${
+        <section
+          aria-label="Conversas"
+          className={`card min-h-0 flex-col overflow-hidden sm:flex ${
             active ? "hidden" : "flex"
           }`}
         >
-          <div className="shrink-0 border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
-            Conversas
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="text-sm font-bold text-foreground">Conversas</h2>
+            {conversations.length > 0 && (
+              <span className="badge badge-neutral">{conversations.length}</span>
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {convLoading ? (
-              <p className="px-4 py-6 text-sm text-muted">Carregando…</p>
+              <div className="space-y-3 p-4" aria-busy="true">
+                {[...Array(5)].map((_, i) => (
+                  <div key={i} className="space-y-2">
+                    <div className="skeleton h-4 w-2/3" />
+                    <div className="skeleton h-3 w-full" />
+                  </div>
+                ))}
+              </div>
             ) : convError ? (
-              <p className="px-4 py-6 text-sm text-error">{convError}</p>
+              <p className="px-4 py-6 text-xs text-error">{convError}</p>
             ) : conversations.length === 0 ? (
-              <p className="px-4 py-6 text-sm text-muted">Nenhuma conversa ainda.</p>
+              <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
+                <span className="icon-tile bg-sun-soft text-warning">
+                  <MessageCircle size={20} aria-hidden="true" />
+                </span>
+                <p className="text-sm text-muted">Nenhuma conversa ainda.</p>
+              </div>
             ) : (
-              conversations.map((c) => {
-                const isActive = c.id === activeId;
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => openConversation(c.id)}
-                    className={`block w-full border-b border-border px-4 py-3 text-left ${
-                      isActive ? "bg-surface-hover" : "hover:bg-surface-hover"
-                    }`}
-                  >
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="truncate text-sm font-medium text-foreground">
-                        @{c.contact.username ?? "desconhecido"}
-                      </span>
-                      <span className="shrink-0 text-[11px] text-zinc-500">
-                        {formatTime(c.updatedTime)}
-                      </span>
-                    </div>
-                    {c.lastMessage && (
-                      <p className="mt-0.5 truncate text-xs text-muted">
-                        {c.lastMessage.fromMe ? "Você: " : ""}
-                        {c.lastMessage.text || "(sem texto)"}
-                      </p>
-                    )}
-                  </button>
-                );
-              })
+              <ul className="divide-y divide-border">
+                {conversations.map((c) => {
+                  const isActive = c.id === activeId;
+                  return (
+                    <li key={c.id}>
+                      <button
+                        type="button"
+                        onClick={() => openConversation(c.id)}
+                        aria-current={isActive ? "true" : undefined}
+                        className={`block min-h-[44px] w-full px-4 py-3 text-left transition-colors ${
+                          isActive
+                            ? "bg-brand-soft border-l-4 border-accent pl-3"
+                            : "hover:bg-surface-hover"
+                        }`}
+                      >
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span
+                            className={`truncate text-sm ${
+                              isActive ? "font-bold text-brand" : "font-bold text-foreground"
+                            }`}
+                          >
+                            @{c.contact.username ?? "desconhecido"}
+                          </span>
+                          <span className="shrink-0 text-[11px] text-muted">
+                            {formatTime(c.updatedTime)}
+                          </span>
+                        </div>
+                        {c.lastMessage && (
+                          <p className="mt-0.5 truncate text-xs text-muted">
+                            {c.lastMessage.fromMe ? "Você: " : ""}
+                            {c.lastMessage.text || "(sem texto)"}
+                          </p>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
-        </div>
+        </section>
 
         {/* Thread. On mobile it is only shown once a conversation is open and
             fills the pane; on sm+ it always sits beside the list. */}
-        <div
-          className={`min-h-0 flex-col ${active ? "flex" : "hidden sm:flex"}`}
+        <section
+          aria-label="Mensagens"
+          className={`card min-h-0 flex-col overflow-hidden ${
+            active ? "flex" : "hidden sm:flex"
+          }`}
         >
           {!active ? (
-            <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted">
-              Selecione uma conversa para ler e responder.
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+              <span className="icon-tile bg-sun-soft text-warning">
+                <MessageCircle size={22} aria-hidden="true" />
+              </span>
+              <p className="text-sm text-muted">
+                Selecione uma conversa para ler e responder.
+              </p>
             </div>
           ) : (
             <>
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 sm:px-4">
                 <button
                   type="button"
                   onClick={() => setActiveId(null)}
-                  className="-ml-1 rounded px-2 py-1 text-muted hover:text-foreground sm:hidden"
+                  className="btn btn-ghost -ml-1 px-2 sm:hidden"
                   aria-label="Voltar para conversas"
                 >
-                  Voltar
+                  <ArrowLeft size={20} aria-hidden="true" />
                 </button>
-                <span className="truncate">
+                <h2 className="truncate text-sm font-bold text-foreground">
                   @{active.contact.username ?? "desconhecido"}
-                </span>
+                </h2>
               </div>
 
-              <div ref={scrollRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+              <div ref={scrollRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-background p-4">
                 {threadLoading && messages.length === 0 ? (
-                  <p className="text-sm text-muted">Carregando…</p>
+                  <div className="space-y-3" aria-busy="true">
+                    <div className="skeleton h-10 w-1/2" />
+                    <div className="skeleton ml-auto h-10 w-2/5" />
+                    <div className="skeleton h-10 w-3/5" />
+                  </div>
                 ) : messages.length === 0 ? (
                   <p className="text-sm text-muted">Nenhuma mensagem.</p>
                 ) : (
@@ -358,16 +400,16 @@ export default function InboxPage() {
                       className={`flex ${m.fromMe ? "justify-end" : "justify-start"}`}
                     >
                       <div
-                        className={`max-w-[75%] rounded-lg px-3 py-2 text-sm ${
+                        className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm sm:max-w-[70%] ${
                           m.fromMe
-                            ? "bg-accent text-white"
-                            : "bg-surface text-foreground border border-border"
+                            ? "bg-brand text-white rounded-br-md"
+                            : "bg-surface-hover text-foreground rounded-bl-md"
                         }`}
                       >
                         <p className="whitespace-pre-wrap break-words">{m.text}</p>
                         <p
                           className={`mt-1 text-[10px] ${
-                            m.fromMe ? "text-white/70" : "text-zinc-500"
+                            m.fromMe ? "text-white/70" : "text-muted"
                           }`}
                         >
                           {formatTime(m.createdTime)}
@@ -379,31 +421,40 @@ export default function InboxPage() {
               </div>
 
               <div className="shrink-0 border-t border-border p-3">
-                {sendError && (
-                  <p className="mb-2 text-xs text-error">{sendError}</p>
-                )}
+                <label htmlFor="inbox-composer" className="sr-only">
+                  Sua resposta
+                </label>
                 <div className="flex items-end gap-2">
                   <textarea
+                    id="inbox-composer"
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={handleKeyDown}
                     rows={1}
-                    placeholder="Escreva uma resposta…  (Enter para enviar, Shift+Enter para nova linha)"
-                    className="max-h-32 min-h-[40px] flex-1 resize-none rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+                    placeholder="Escreva uma resposta…"
+                    className="field max-h-32 flex-1 resize-none"
                   />
                   <button
                     type="button"
                     onClick={() => void handleSend()}
                     disabled={sending || !draft.trim()}
-                    className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+                    className="btn btn-primary shrink-0"
                   >
-                    {sending ? "Enviando…" : "Enviar"}
+                    <Send size={18} aria-hidden="true" />
+                    <span>{sending ? "Enviando…" : "Enviar"}</span>
                   </button>
                 </div>
+                {sendError ? (
+                  <p className="mt-1.5 text-xs text-error">{sendError}</p>
+                ) : (
+                  <p className="helper hidden sm:block">
+                    Enter para enviar, Shift+Enter para nova linha
+                  </p>
+                )}
               </div>
             </>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );

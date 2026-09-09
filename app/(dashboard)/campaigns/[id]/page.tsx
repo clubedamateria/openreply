@@ -11,6 +11,19 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import {
+  ArrowLeft,
+  BarChart3,
+  Eye,
+  Link as LinkIcon,
+  MousePointerClick,
+  Pause,
+  Pencil,
+  Percent,
+  Play,
+  Send,
+  XCircle,
+} from "lucide-react";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
 
 interface Campaign {
@@ -126,16 +139,47 @@ export default function CampaignDetailPage() {
   }
 
   if (loading) {
-    return <div className="panel h-64 rounded" />;
+    return (
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,340px)_1fr]">
+        <div className="space-y-4">
+          <div className="skeleton h-4 w-24" />
+          <div className="skeleton h-7 w-2/3" />
+          <div className="card space-y-3 p-4">
+            <div className="skeleton h-4 w-1/2" />
+            <div className="skeleton h-14 w-full" />
+          </div>
+          <div className="card space-y-3 p-4">
+            <div className="skeleton h-4 w-1/2" />
+            <div className="skeleton h-10 w-full" />
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div className="skeleton h-11 w-full" />
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="card p-4">
+                <div className="skeleton mb-3 h-10 w-10" />
+                <div className="skeleton h-7 w-16" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
   if (notFound || !campaign) {
     return (
-      <div className="panel rounded p-8 text-center">
+      <div className="card p-8 text-center sm:p-12">
+        <div className="icon-tile mx-auto mb-4 bg-sun-soft text-warning">
+          <XCircle size={22} aria-hidden="true" />
+        </div>
         <p className="text-sm text-muted">Campanha não encontrada.</p>
         <button
+          type="button"
           onClick={() => router.push("/campaigns")}
-          className="mt-4 rounded border border-border px-4 py-2 text-sm text-muted hover:text-foreground"
+          className="btn btn-secondary mt-4"
         >
+          <ArrowLeft size={18} aria-hidden="true" />
           Voltar para campanhas
         </button>
       </div>
@@ -161,34 +205,52 @@ export default function CampaignDetailPage() {
     : campaign.keywords.join(", ") || "Sem palavras-chave";
 
   const metrics = [
-    { label: "Envios", value: campaign.analytics.sent },
-    { label: "Cliques", value: campaign.analytics.clicks },
-    { label: "CTR", value: `${campaign.analytics.ctr}%` },
-    { label: "Falhas", value: campaign.analytics.failed },
+    {
+      label: "DMs enviadas",
+      value: campaign.analytics.sent,
+      icon: Send,
+      tile: "bg-brand-soft text-brand",
+    },
+    {
+      label: "Cliques",
+      value: campaign.analytics.clicks,
+      icon: MousePointerClick,
+      tile: "bg-accent-soft text-accent",
+    },
+    {
+      label: "Taxa de cliques",
+      value: `${campaign.analytics.ctr}%`,
+      icon: Percent,
+      tile: "bg-sun-soft text-warning",
+    },
+    {
+      label: "Falhas",
+      value: campaign.analytics.failed,
+      icon: XCircle,
+      tile: "bg-error-soft text-error",
+    },
   ];
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,340px)_1fr]">
       {/* Left: config summary */}
-      <div className="space-y-6">
+      <div className="space-y-4">
         <div className="flex items-center gap-2">
-          <Link
-            href="/campaigns"
-            className="text-sm text-muted hover:text-foreground"
-          >
-            &larr; Campanhas
+          <Link href="/campaigns" className="btn btn-sm btn-ghost -ml-2">
+            <ArrowLeft size={16} aria-hidden="true" />
+            Campanhas
           </Link>
         </div>
-        <div className="flex items-center gap-2">
-          <h1 className="truncate text-lg font-semibold">{campaign.name}</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="truncate text-xl font-extrabold text-brand">
+            {campaign.name}
+          </h1>
           <span
-            className={`shrink-0 rounded px-2 py-0.5 text-xs font-semibold ${
-              campaign.isActive
-                ? "bg-success/10 text-success"
-                : "bg-zinc-500/10 text-muted"
+            className={`badge ${
+              campaign.isActive ? "badge-success" : "badge-neutral"
             }`}
           >
-            {campaign.isActive ? "NO AR" : "Pausada"}
+            {campaign.isActive ? "Ativa" : "Pausada"}
           </span>
         </div>
 
@@ -199,10 +261,10 @@ export default function CampaignDetailPage() {
               <img
                 src={postThumb}
                 alt="Post"
-                className="h-14 w-14 rounded object-cover"
+                className="h-14 w-14 rounded-[10px] border border-border object-cover"
               />
             ) : (
-              <div className="grid h-14 w-14 place-items-center rounded bg-surface-hover text-[10px] text-muted">
+              <div className="grid h-14 w-14 place-items-center rounded-[10px] bg-surface-hover text-[10px] font-bold text-muted">
                 {campaign.matchAnyPost || campaign.pendingNextReel ? "Qualquer" : "Post"}
               </div>
             )}
@@ -239,7 +301,7 @@ export default function CampaignDetailPage() {
           <Summary title="Precisa seguir antes">
             <FieldBox>
               {campaign.followPromptMessage ||
-                "um favor rápido antes de eu enviar seu link. eu não ganho nada com isso, é gratuito. se quiser me apoiar, só não deixe de seguir depois, e dê uma estrela no repositório do github se te ajudar. toque no botão quando estiver seguindo e eu envio"}
+                "um favor rápido antes de eu enviar seu link: me segue por aqui? toque no botão quando estiver seguindo e eu envio"}
             </FieldBox>
             <FieldBox>
               {campaign.followPromptButtonLabel || "já estou seguindo"}
@@ -265,7 +327,8 @@ export default function CampaignDetailPage() {
               ?.filter((link) => link.destinationUrl)
               .map((link, i) => (
                 <div key={i} className="space-y-1">
-                  <div className="rounded border border-border bg-surface px-3 py-2">
+                  <div className="flex items-start gap-2 rounded-[10px] border border-border bg-surface-hover px-3 py-2">
+                    <LinkIcon size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-muted" />
                     <p className="select-all break-all font-mono text-xs text-foreground">
                       {link.trackedUrl ?? link.destinationUrl}
                     </p>
@@ -294,45 +357,58 @@ export default function CampaignDetailPage() {
       {/* Right: top bar + tabs */}
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-3 border-b border-border pb-3">
-          <div className="flex gap-4">
+          <div role="tablist" aria-label="Seções da campanha" className="flex gap-1">
             <TabButton active={tab === "insights"} onClick={() => setTab("insights")}>
+              <BarChart3 size={16} aria-hidden="true" />
               Insights
             </TabButton>
             <TabButton active={tab === "preview"} onClick={() => setTab("preview")}>
+              <Eye size={16} aria-hidden="true" />
               Prévia
             </TabButton>
           </div>
           <div className="flex items-center gap-2">
             <Link
               href={`/campaigns/${campaign.id}/edit`}
-              className="rounded border border-border px-3 py-1.5 text-sm text-muted hover:text-foreground"
+              className="btn btn-secondary"
             >
+              <Pencil size={18} aria-hidden="true" />
               Editar
             </Link>
             <button
+              type="button"
               onClick={toggleActive}
               disabled={busy}
-              className={`rounded border px-3 py-1.5 text-sm disabled:opacity-50 ${
-                campaign.isActive
-                  ? "border-error/30 text-error hover:bg-error/10"
-                  : "border-success/30 text-success hover:bg-success/10"
-              }`}
+              className={`btn ${campaign.isActive ? "btn-danger" : "btn-primary"}`}
             >
+              {campaign.isActive ? (
+                <Pause size={18} aria-hidden="true" />
+              ) : (
+                <Play size={18} aria-hidden="true" />
+              )}
               {campaign.isActive ? "Parar" : "Retomar"}
             </button>
           </div>
         </div>
 
         {tab === "insights" && (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            {metrics.map((m) => (
-              <div key={m.label} className="panel rounded p-4">
-                <p className="text-sm text-muted">{m.label}</p>
-                <p className="mt-1 text-2xl font-semibold text-foreground">
-                  {m.value}
-                </p>
-              </div>
-            ))}
+          <div className="stagger grid grid-cols-2 gap-4 sm:grid-cols-4">
+            {metrics.map((m) => {
+              const Icon = m.icon;
+              return (
+                <div key={m.label} className="card p-4">
+                  <div className={`icon-tile mb-3 ${m.tile}`}>
+                    <Icon size={20} aria-hidden="true" />
+                  </div>
+                  <p className="text-2xl font-extrabold text-foreground">
+                    {m.value}
+                  </p>
+                  <p className="mt-0.5 text-xs font-bold uppercase tracking-wide text-muted">
+                    {m.label}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -381,16 +457,18 @@ export default function CampaignDetailPage() {
 
 function Summary({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-2">
-      <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+    <section className="card space-y-2 p-4">
+      <h2 className="text-xs font-bold uppercase tracking-wide text-muted">
+        {title}
+      </h2>
       {children}
-    </div>
+    </section>
   );
 }
 
 function FieldBox({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded border border-border bg-surface px-3 py-2 text-sm text-foreground">
+    <div className="rounded-[10px] border border-border bg-surface-hover px-3 py-2 text-sm text-foreground">
       {children}
     </div>
   );
@@ -407,11 +485,14 @@ function TabButton({
 }) {
   return (
     <button
+      type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
-      className={`border-b-2 pb-2 text-sm font-medium ${
+      className={`inline-flex min-h-[44px] items-center gap-2 rounded-[10px] px-3 text-sm font-bold transition-colors ${
         active
-          ? "border-accent text-foreground"
-          : "border-transparent text-muted hover:text-foreground"
+          ? "bg-brand-soft text-brand"
+          : "text-muted hover:bg-surface-hover hover:text-foreground"
       }`}
     >
       {children}

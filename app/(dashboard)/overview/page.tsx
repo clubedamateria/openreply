@@ -9,13 +9,25 @@
  */
 
 import { useEffect, useState } from "react";
+import {
+  Eye,
+  Users,
+  Heart,
+  MessageCircle,
+  Bookmark,
+  Share2,
+  AtSign,
+  ImageOff,
+  AlertTriangle,
+  UserRound,
+} from "lucide-react";
 import AccountSelect from "@/components/account-select";
 import StatCard from "@/components/stat-card";
 import FollowerChart from "@/components/follower-chart";
 import type { OverviewResponse } from "@/app/api/instagram/overview/route";
 
 function formatNumber(n: number | null): string {
-  if (n === null) return "—";
+  if (n === null) return "n/d";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString("pt-BR");
@@ -31,6 +43,15 @@ const COUNT_OPTIONS = [
   { value: "50", label: "Últimos 50" },
   { value: "100", label: "Últimos 100" },
   { value: "all", label: "Todo o período" },
+];
+
+const METRIC_COLUMNS: Array<{ label: string; Icon: typeof Eye }> = [
+  { label: "Visualizações", Icon: Eye },
+  { label: "Alcance", Icon: Users },
+  { label: "Curtidas", Icon: Heart },
+  { label: "Comentários", Icon: MessageCircle },
+  { label: "Salvos", Icon: Bookmark },
+  { label: "Compartilhamentos", Icon: Share2 },
 ];
 
 export default function OverviewPage() {
@@ -73,26 +94,29 @@ export default function OverviewPage() {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 sm:gap-4">
-        {[...Array(6)].map((_, i) => (
-          <div key={i} className="panel rounded p-4 h-24 sm:p-5">
-            <div className="h-4 w-16 bg-zinc-200 rounded" />
-            <div className="mt-3 h-6 w-20 bg-zinc-200/60 rounded" />
-          </div>
-        ))}
+      <div className="space-y-6">
+        <div className="skeleton h-14 w-72 rounded-2xl" />
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
+          {[...Array(6)].map((_, i) => (
+            <div key={i} className="skeleton h-28 rounded-2xl" />
+          ))}
+        </div>
+        <div className="skeleton h-64 rounded-2xl" />
+        <div className="skeleton h-80 rounded-2xl" />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="panel rounded p-8 text-center">
+      <div className="card flex flex-col items-center gap-3 p-8 text-center">
+        <span className="icon-tile bg-error-soft text-error" aria-hidden="true">
+          <AlertTriangle size={22} />
+        </span>
         <p className="text-sm text-error">{error}</p>
         {error.includes("connect") && (
-          <a
-            href="/api/instagram/connect"
-            className="mt-4 inline-block text-sm text-accent hover:underline"
-          >
+          <a href="/api/instagram/connect" className="btn btn-primary mt-2">
+            <AtSign size={18} aria-hidden="true" />
             Conectar Instagram
           </a>
         )}
@@ -106,12 +130,16 @@ export default function OverviewPage() {
     data;
 
   return (
-    <div className="space-y-8">
-      {data.limitations?.map(note => <p key={note} className="text-sm text-muted">{note}</p>)}
+    <div className="space-y-6 stagger">
+      {data.limitations?.map((note) => (
+        <p key={note} className="text-sm text-muted">
+          {note}
+        </p>
+      ))}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-lg font-semibold text-foreground">Visão geral</h1>
-          <p className="text-sm text-muted mt-1">
+          <h1 className="text-2xl font-extrabold text-brand">Visão geral</h1>
+          <p className="mt-1 text-sm text-muted">
             {data.provider !== "ZERNIO" && data.requestedCount === "all" ? "Todo o período" : "Recentes"}:{" "}
             {totals.posts} post{totals.posts === 1 ? "" : "s"} de @
             {data.account.username}
@@ -120,20 +148,22 @@ export default function OverviewPage() {
           {followers !== null && (
             // Kept out of the tile row below: that row sums the selected posts,
             // whereas this is a current account-level total.
-            <p className="mt-1 text-sm text-muted">
+            <p className="mt-2 inline-flex items-center gap-1.5 text-sm text-muted">
+              <UserRound size={16} aria-hidden="true" />
               {followers.toLocaleString("pt-BR")} seguidores
             </p>
           )}
         </div>
         <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
-          <label className="flex flex-col gap-2 text-sm">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          <div>
+            <label htmlFor="overview-count" className="label">
               Período
-            </span>
+            </label>
             <select
+              id="overview-count"
               value={count}
               onChange={(e) => handleCountChange(e.target.value)}
-              className="border-0 bg-transparent py-2 pr-1 text-sm text-foreground outline-none"
+              className="field w-auto min-w-40"
             >
               {COUNT_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -141,7 +171,7 @@ export default function OverviewPage() {
                 </option>
               ))}
             </select>
-          </label>
+          </div>
           {accounts.length > 1 && (
             <AccountSelect
               accounts={accounts.map((a) => ({
@@ -157,99 +187,120 @@ export default function OverviewPage() {
       </div>
 
       {!insightsAvailable && (
-        <div className="panel rounded p-4 border border-border">
-          <p className="text-sm text-foreground">
-            Visualizações, alcance, salvos e compartilhamentos precisam da permissão de insights.
-          </p>
-          <p className="text-sm text-muted mt-1">
-            Reconecte sua conta para concedê-la. Enquanto isso, curtidas e
-            comentários são exibidos.
-          </p>
-          <a
-            href="/api/instagram/connect"
-            className="mt-3 inline-block text-sm text-accent hover:underline"
-          >
+        <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+          <div className="flex items-start gap-3">
+            <span className="icon-tile bg-warning-soft text-warning" aria-hidden="true">
+              <AlertTriangle size={20} />
+            </span>
+            <div>
+              <p className="text-sm font-bold text-foreground">
+                Visualizações, alcance, salvos e compartilhamentos precisam da permissão de insights.
+              </p>
+              <p className="mt-1 text-sm text-muted">
+                Reconecte sua conta para concedê-la. Enquanto isso, curtidas e
+                comentários são exibidos.
+              </p>
+            </div>
+          </div>
+          <a href="/api/instagram/connect" className="btn btn-primary shrink-0">
+            <AtSign size={18} aria-hidden="true" />
             Reconectar Instagram
           </a>
         </div>
       )}
 
       {/* Aggregate totals */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
-        <StatCard label="Visualizações" value={formatNumber(totals.views)} />
-        <StatCard label="Alcance" value={formatNumber(totals.reach)} />
-        <StatCard label="Curtidas" value={formatNumber(totals.likes)} />
-        <StatCard label="Comentários" value={formatNumber(totals.comments)} />
-        <StatCard label="Salvos" value={formatNumber(totals.saved)} />
-        <StatCard label="Compartilhamentos" value={formatNumber(totals.shares)} />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-6">
+        <StatCard label="Visualizações" value={formatNumber(totals.views)} icon={<Eye size={20} />} tone="brand" />
+        <StatCard label="Alcance" value={formatNumber(totals.reach)} icon={<Users size={20} />} tone="info" />
+        <StatCard label="Curtidas" value={formatNumber(totals.likes)} icon={<Heart size={20} />} tone="accent" />
+        <StatCard label="Comentários" value={formatNumber(totals.comments)} icon={<MessageCircle size={20} />} tone="sun" />
+        <StatCard label="Salvos" value={formatNumber(totals.saved)} icon={<Bookmark size={20} />} tone="success" />
+        <StatCard label="Compartilhamentos" value={formatNumber(totals.shares)} icon={<Share2 size={20} />} tone="brand" />
       </div>
 
-      {/* Follower trend — account-level, independent of the post range */}
+      {/* Follower trend: account-level, independent of the post range */}
       <FollowerChart data={followerHistory} followers={followers} />
 
       {/* Per-post table */}
-      <div className="panel rounded p-4 sm:p-6">
-        <h2 className="text-sm font-semibold text-foreground mb-4">Posts</h2>
+      <div className="card p-4 sm:p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <span className="icon-tile bg-brand-soft text-brand" aria-hidden="true">
+            <AtSign size={20} />
+          </span>
+          <h2 className="text-base font-extrabold text-foreground">Posts</h2>
+        </div>
         {posts.length === 0 ? (
-          <p className="text-sm text-muted py-8 text-center">Nenhum post encontrado</p>
+          <div className="flex flex-col items-center gap-3 py-8 text-center">
+            <span className="icon-tile bg-sun-soft text-warning" aria-hidden="true">
+              <ImageOff size={22} />
+            </span>
+            <p className="text-sm text-muted">Nenhum post encontrado</p>
+            <a href="/api/instagram/connect" className="btn btn-secondary">
+              <AtSign size={18} aria-hidden="true" />
+              Reconectar conta
+            </a>
+          </div>
         ) : (
           // Eight metric columns can't compress into a phone; let the table keep
-          // its natural width and scroll inside the panel instead.
-          <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-            <table className="w-full min-w-[720px] text-sm">
+          // its natural width and scroll inside the card instead.
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-zinc-500 border-b border-border">
-                  <th className="py-2 pr-4 font-medium">Post</th>
-                  <th className="py-2 px-3 font-medium text-right">Visualizações</th>
-                  <th className="py-2 px-3 font-medium text-right">Alcance</th>
-                  <th className="py-2 px-3 font-medium text-right">Curtidas</th>
-                  <th className="py-2 px-3 font-medium text-right">Comentários</th>
-                  <th className="py-2 px-3 font-medium text-right">Salvos</th>
-                  <th className="py-2 px-3 font-medium text-right">Compartilhamentos</th>
-                  <th className="py-2 pl-3 font-medium text-right">Data</th>
+                <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
+                  <th className="py-2 pr-4 font-bold">Post</th>
+                  {METRIC_COLUMNS.map(({ label, Icon }) => (
+                    <th key={label} className="px-3 py-2 text-right font-bold">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Icon size={14} aria-hidden="true" />
+                        {label}
+                      </span>
+                    </th>
+                  ))}
+                  <th className="py-2 pl-3 text-right font-bold">Data</th>
                 </tr>
               </thead>
               <tbody>
                 {posts.map((p) => (
                   <tr
                     key={p.id}
-                    className="border-b border-border last:border-0"
+                    className="border-b border-border last:border-0 hover:bg-surface-hover"
                   >
-                    <td className="py-3 pr-4 max-w-xs">
+                    <td className="max-w-xs py-3 pr-4">
                       {p.permalink ? (
                         <a
                           href={p.permalink}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-foreground hover:text-accent truncate block"
+                          className="block truncate font-semibold text-brand hover:underline"
                         >
                           {p.caption || `Post ${p.mediaType}`}
                         </a>
                       ) : (
-                        <span className="text-foreground truncate block">
+                        <span className="block truncate text-foreground">
                           {p.caption || `Post ${p.mediaType}`}
                         </span>
                       )}
                     </td>
-                    <td className="py-3 px-3 text-right text-muted">
+                    <td className="px-3 py-3 text-right text-muted">
                       {formatNumber(p.views)}
                     </td>
-                    <td className="py-3 px-3 text-right text-muted">
+                    <td className="px-3 py-3 text-right text-muted">
                       {formatNumber(p.reach)}
                     </td>
-                    <td className="py-3 px-3 text-right text-muted">
+                    <td className="px-3 py-3 text-right text-muted">
                       {formatNumber(p.likes)}
                     </td>
-                    <td className="py-3 px-3 text-right text-muted">
+                    <td className="px-3 py-3 text-right text-muted">
                       {formatNumber(p.comments)}
                     </td>
-                    <td className="py-3 px-3 text-right text-muted">
+                    <td className="px-3 py-3 text-right text-muted">
                       {formatNumber(p.saved)}
                     </td>
-                    <td className="py-3 px-3 text-right text-muted">
+                    <td className="px-3 py-3 text-right text-muted">
                       {formatNumber(p.shares)}
                     </td>
-                    <td className="py-3 pl-3 text-right text-zinc-500">
+                    <td className="py-3 pl-3 text-right text-muted">
                       {formatDate(p.timestamp)}
                     </td>
                   </tr>

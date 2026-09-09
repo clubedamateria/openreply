@@ -1,23 +1,24 @@
 import type { Metadata, Viewport } from "next";
+import { Nunito } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
+const nunito = Nunito({
+  subsets: ["latin"],
+  weight: ["400", "600", "700", "800"],
+  display: "swap",
+  variable: "--font-nunito",
+});
+
 export const metadata: Metadata = {
-  title: "OpenReply - Automação open source de comentário para DM no Instagram",
+  title: "Clube da Matéria · Automações",
   description:
-    "Uma alternativa gratuita e auto-hospedada ao ManyChat. Envie uma DM no Instagram automaticamente quando alguém comentar uma palavra-chave no seu post ou reel, usando a API oficial da Meta.",
-  keywords: [
-    "instagram automation",
-    "comment to DM",
-    "instagram private replies",
-    "social commerce",
-    "manychat alternative",
-  ],
+    "Automações do Instagram do Clube da Matéria: transforme comentários em conversas e leads.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
-    title: "OpenReply",
-    statusBarStyle: "black-translucent",
+    title: "Clube",
+    statusBarStyle: "default",
   },
   icons: {
     icon: [
@@ -29,7 +30,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#18181b",
+  themeColor: "#0f4c9c",
   width: "device-width",
   initialScale: 1,
   // Installed on iOS the app owns the full screen, notch included; the safe
@@ -43,7 +44,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="pt-BR" className="h-full dark">
+    <html lang="pt-BR" className={`h-full ${nunito.variable} ${nunito.className}`}>
       <body
         className="min-h-full bg-background text-foreground font-sans antialiased"
         // Clears the home indicator when installed; 0 everywhere else.

@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ArrowLeft, FileUp, Sparkles, AlertCircle } from "lucide-react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import { parseCsv } from "@/lib/utils/csv";
 import { IMPORT_QUEUE_KEY, IMPORT_ACCOUNT_KEY } from "@/lib/import-queue";
@@ -83,78 +84,89 @@ export default function ImportCampaignsPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">Importar campanhas</h1>
-        <p className="text-sm text-muted mt-1">
+        <h1 className="text-xl font-extrabold text-brand">Importar campanhas</h1>
+        <p className="mt-1 text-sm text-muted">
           Cole um CSV com uma linha por campanha. Cada linha abre no construtor
           preenchida e editável, para você revisar e escolher o reel antes de
           salvar. As colunas obrigatórias são{" "}
-          <code className="text-accent">keywords</code> and{" "}
-          <code className="text-accent">dm_message</code>. Opcionais:{" "}
-          <code className="text-accent">name</code>,{" "}
-          <code className="text-accent">public_reply</code>,{" "}
-          <code className="text-accent">tracked_url</code>,{" "}
-          <code className="text-accent">opening_dm</code>,{" "}
-          <code className="text-accent">opening_dm_button</code>. As palavras-chave
+          <code className="text-brand">keywords</code> e{" "}
+          <code className="rounded-md bg-brand-soft px-1 font-mono text-xs text-brand">dm_message</code>. Opcionais:{" "}
+          <code className="rounded-md bg-brand-soft px-1 font-mono text-xs text-brand">name</code>,{" "}
+          <code className="rounded-md bg-brand-soft px-1 font-mono text-xs text-brand">public_reply</code>,{" "}
+          <code className="rounded-md bg-brand-soft px-1 font-mono text-xs text-brand">tracked_url</code>,{" "}
+          <code className="rounded-md bg-brand-soft px-1 font-mono text-xs text-brand">opening_dm</code>,{" "}
+          <code className="rounded-md bg-brand-soft px-1 font-mono text-xs text-brand">opening_dm_button</code>. As palavras-chave
           vão em uma única célula, separadas por vírgula. Use{" "}
-          <code className="text-accent">{"{link}"}</code> na mensagem para
+          <code className="rounded-md bg-brand-soft px-1 font-mono text-xs text-brand">{"{link}"}</code> na mensagem para
           inserir o link rastreado.
         </p>
       </div>
 
-      {error && (
-        <div className="p-4 rounded bg-error/10 border border-error/20 text-error text-sm">
-          {error}
-        </div>
-      )}
+      <div className="card space-y-5 p-5 sm:p-6">
+        {error && (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-[10px] bg-error-soft px-4 py-3 text-sm font-bold text-error"
+          >
+            <AlertCircle size={18} aria-hidden="true" className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
 
-      {accounts.length > 1 && (
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-foreground">
-            Conta do Instagram
+        {accounts.length > 1 && (
+          <div>
+            <AccountSelect
+              accounts={accounts}
+              value={selectedAccountId}
+              onChange={setSelectedAccountId}
+              includeAll={false}
+              label="Conta do Instagram"
+            />
+            <p className="helper">As campanhas importadas ficam nesta conta.</p>
+          </div>
+        )}
+
+        <div>
+          <label htmlFor="import-csv" className="label">
+            CSV
           </label>
-          <AccountSelect
-            accounts={accounts}
-            value={selectedAccountId}
-            onChange={setSelectedAccountId}
-            includeAll={false}
-            label="Conta"
+          <textarea
+            id="import-csv"
+            value={csv}
+            onChange={(e) => setCsv(e.target.value)}
+            placeholder={SAMPLE}
+            rows={10}
+            className="field resize-y font-mono text-xs"
           />
+          <p className="helper">
+            Uma linha por campanha. A primeira linha é o cabeçalho.
+          </p>
+          <button
+            type="button"
+            onClick={() => setCsv(SAMPLE)}
+            className="btn btn-sm btn-ghost mt-2 -ml-2"
+          >
+            <Sparkles size={16} aria-hidden="true" />
+            Preencher com exemplo
+          </button>
         </div>
-      )}
 
-      <div className="space-y-2">
-        <label className="block text-sm font-medium text-foreground">CSV</label>
-        <textarea
-          value={csv}
-          onChange={(e) => setCsv(e.target.value)}
-          placeholder={SAMPLE}
-          rows={10}
-          className="w-full px-4 py-3 rounded bg-surface border border-border text-sm font-mono text-foreground placeholder:text-zinc-600 focus:border-accent/40 focus:outline-none resize-y"
-        />
-        <button
-          type="button"
-          onClick={() => setCsv(SAMPLE)}
-          className="text-xs text-muted hover:text-foreground"
-        >
-          Preencher com exemplo
-        </button>
-      </div>
-
-      <div className="flex items-center gap-4">
-        <button
-          onClick={startImport}
-          className="px-5 py-2 rounded bg-accent text-sm font-medium text-white hover:bg-accent-hover"
-        >
-          Revisar e importar
-        </button>
-        <button
-          onClick={() => router.push("/campaigns")}
-          className="px-5 py-2 rounded text-sm text-muted hover:text-foreground border border-border"
-        >
-          Cancelar
-        </button>
+        <div className="flex flex-col-reverse gap-3 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-end">
+          <button
+            type="button"
+            onClick={() => router.push("/campaigns")}
+            className="btn btn-secondary"
+          >
+            <ArrowLeft size={18} aria-hidden="true" />
+            Cancelar
+          </button>
+          <button type="button" onClick={startImport} className="btn btn-primary">
+            <FileUp size={18} aria-hidden="true" />
+            Revisar e importar
+          </button>
+        </div>
       </div>
     </div>
   );

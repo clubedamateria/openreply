@@ -14,6 +14,27 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  AlertCircle,
+  ArrowLeft,
+  Check,
+  FileSpreadsheet,
+  Image,
+  KeyRound,
+  Link2,
+  MessageCircle,
+  MessageSquareHeart,
+  Pause,
+  Pencil,
+  Play,
+  SearchX,
+  Send,
+  SkipForward,
+  UserPlus,
+  X,
+  Plus,
+  type LucideIcon,
+} from "lucide-react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import PostPicker from "@/components/post-picker";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
@@ -61,18 +82,30 @@ interface CampaignBuilderProps {
   campaignId?: string;
 }
 
-function Section({
+function SectionCard({
+  icon: Icon,
   title,
+  subtitle,
   children,
 }: {
+  icon: LucideIcon;
   title: string;
+  subtitle?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-3">
-      <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+    <section className="card space-y-4 p-4 sm:p-5">
+      <header className="flex items-center gap-3">
+        <span className="icon-tile bg-brand-soft text-brand">
+          <Icon size={20} aria-hidden />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-sm font-extrabold text-foreground">{title}</h2>
+          {subtitle && <p className="text-xs text-muted">{subtitle}</p>}
+        </div>
+      </header>
       {children}
-    </div>
+    </section>
   );
 }
 
@@ -88,19 +121,23 @@ function Radio({
   return (
     <button
       type="button"
+      role="radio"
+      aria-checked={checked}
       onClick={onSelect}
-      className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
-        checked ? "border-accent bg-accent/5" : "border-border hover:border-border-hover"
+      className={`flex min-h-[44px] w-full items-center gap-3 rounded-[10px] border px-3 py-2.5 text-left text-sm transition-colors ${
+        checked
+          ? "border-brand bg-brand-soft font-bold text-brand"
+          : "border-border text-foreground hover:border-border-hover hover:bg-surface-hover"
       }`}
     >
       <span
-        className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border ${
-          checked ? "border-accent" : "border-zinc-500"
+        className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 ${
+          checked ? "border-brand" : "border-border-hover"
         }`}
       >
-        {checked && <span className="h-2 w-2 rounded-full bg-accent" />}
+        {checked && <span className="h-2.5 w-2.5 rounded-full bg-brand" />}
       </span>
-      <span className="flex-1 text-foreground">{children}</span>
+      <span className="flex-1">{children}</span>
     </button>
   );
 }
@@ -108,24 +145,59 @@ function Radio({
 function Toggle({
   on,
   onToggle,
+  label,
 }: {
   on: boolean;
   onToggle: () => void;
+  label: string;
 }) {
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
       onClick={onToggle}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-        on ? "bg-accent" : "bg-zinc-300"
-      }`}
+      className="-m-2 inline-flex shrink-0 items-center p-2"
     >
       <span
-        className={`absolute top-1 h-4 w-4 rounded-full bg-white transition-transform ${
-          on ? "left-6" : "left-1"
+        className={`relative h-7 w-12 rounded-full transition-colors ${
+          on ? "bg-accent" : "bg-border-hover"
         }`}
-      />
+      >
+        <span
+          className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+            on ? "left-6" : "left-1"
+          }`}
+        />
+      </span>
     </button>
+  );
+}
+
+function ToggleRow({
+  on,
+  onToggle,
+  children,
+}: {
+  on: boolean;
+  onToggle: () => void;
+  children: string;
+}) {
+  return (
+    <div className="flex min-h-[44px] items-center justify-between gap-3 rounded-[10px] border border-border px-3 py-2">
+      <span className="text-sm text-foreground">{children}</span>
+      <Toggle on={on} onToggle={onToggle} label={children} />
+    </div>
+  );
+}
+
+function FieldError({ message }: { message?: string | null }) {
+  if (!message) return null;
+  return (
+    <p role="alert" className="mt-1.5 text-xs text-error">
+      {message}
+    </p>
   );
 }
 
@@ -532,125 +604,130 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     router.refresh();
   }
 
+  // Map the single error string onto the field it belongs to so it can render
+  // right below that field. Anything else (API errors) goes to the banner.
+  const fieldErrors = {
+    post: error === "Escolha um post ou reel para acionar a campanha." ? error : null,
+    keywords:
+      error === "Adicione pelo menos uma palavra-chave ou mude para qualquer palavra."
+        ? error
+        : null,
+    dmMessage: error === "Adicione a DM com o link." ? error : null,
+    openingDm:
+      error === "Sua DM de abertura precisa de uma mensagem e um texto de botão."
+        ? error
+        : null,
+  };
+  const bannerError =
+    error && !Object.values(fieldErrors).some(Boolean) ? error : null;
+
   if (loading) {
-    return <div className="panel h-64 rounded" />;
+    return (
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-4">
+          <div className="skeleton h-14" />
+          <div className="skeleton h-48 rounded-2xl" />
+          <div className="skeleton h-64 rounded-2xl" />
+          <div className="skeleton h-48 rounded-2xl" />
+        </div>
+        <div className="skeleton hidden h-[720px] rounded-2xl lg:block" />
+      </div>
+    );
   }
 
   if (notFound) {
     return (
-      <div className="panel rounded p-8 text-center">
-        <p className="text-sm text-muted">Campanha não encontrada.</p>
+      <div className="card flex flex-col items-center gap-3 p-8 text-center">
+        <span className="icon-tile bg-sun-soft text-warning">
+          <SearchX size={22} aria-hidden />
+        </span>
+        <p className="text-sm font-bold text-foreground">Campanha não encontrada.</p>
         <button
+          type="button"
           onClick={() => router.push("/campaigns")}
-          className="mt-4 rounded border border-border px-4 py-2 text-sm text-muted hover:text-foreground"
+          className="btn btn-primary mt-1"
         >
+          <ArrowLeft size={18} aria-hidden />
           Voltar para campanhas
         </button>
       </div>
     );
   }
 
+  const fieldClass = "field";
+  const textareaClass = "field resize-none";
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24 lg:pb-6">
       {importQueue && (
-        <div className="rounded border border-accent/30 bg-accent/5 px-4 py-3 text-sm">
-          <span className="font-medium text-foreground">
-            Importando {importTotal - importQueue.length + 1} de {importTotal}.
-          </span>{" "}
-          <span className="text-muted">
-            Os campos foram preenchidos a partir do seu CSV. Escolha o reel, edite o que
-            quiser e salve para carregar o próximo, ou clique em Pular se não quiser este.
+        <div className="card flex items-start gap-3 border-accent/40 bg-accent-soft p-4 text-sm">
+          <span className="icon-tile bg-surface text-accent">
+            <FileSpreadsheet size={20} aria-hidden />
           </span>
+          <div className="min-w-0">
+            <p className="font-bold text-foreground">
+              Importando {importTotal - importQueue.length + 1} de {importTotal}.
+            </p>
+            <p className="text-muted">
+              Os campos foram preenchidos a partir do seu CSV. Escolha o reel, edite o que
+              quiser e salve para carregar o próximo, ou clique em Pular se não quiser este.
+            </p>
+          </div>
         </div>
       )}
 
-      {/* Top bar */}
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-        <div className="flex min-w-0 items-center gap-3">
-          {mode === "edit" ? (
-            <>
-              <span className="truncate text-sm font-semibold text-foreground">
-                {name || "Campanha sem título"}
-              </span>
-              <span
-                className={`rounded px-2 py-0.5 text-xs font-semibold ${
-                  isActive ? "bg-success/15 text-success" : "bg-zinc-500/15 text-muted"
-                }`}
-              >
-                {isActive ? "ATIVA" : "PAUSADA"}
-              </span>
-            </>
-          ) : (
-            <span className="text-sm text-muted">Nova campanha</span>
-          )}
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          {importQueue && (
-            <button
-              type="button"
-              onClick={skipRow}
-              disabled={saving}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground disabled:opacity-50"
-            >
-              {importQueue.length > 1 ? "Pular" : "Pular e finalizar"}
-            </button>
-          )}
-          {mode === "edit" &&
-            (isActive ? (
-              <button
-                type="button"
-                onClick={() => handleSubmit(false)}
-                disabled={saving}
-                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground disabled:opacity-50"
-              >
-                Pausar
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => handleSubmit(true)}
-                disabled={saving}
-                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:text-foreground disabled:opacity-50"
-              >
-                Ativar
-              </button>
-            ))}
-          <button
-            type="button"
-            onClick={() => handleSubmit(mode === "new" ? true : isActive)}
-            disabled={saving}
-            className="rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
-          >
-            {saving ? "Salvando…" : mode === "new" ? "Ativar" : "Salvar alterações"}
-          </button>
-        </div>
+      {/* Page header */}
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
+        {mode === "edit" ? (
+          <>
+            <h1 className="min-w-0 truncate text-lg font-extrabold text-brand">
+              {name || "Campanha sem título"}
+            </h1>
+            <span className={`badge ${isActive ? "badge-success" : "badge-neutral"}`}>
+              {isActive ? (
+                <Play size={12} aria-hidden />
+              ) : (
+                <Pause size={12} aria-hidden />
+              )}
+              {isActive ? "ATIVA" : "PAUSADA"}
+            </span>
+          </>
+        ) : (
+          <h1 className="text-lg font-extrabold text-brand">Nova campanha</h1>
+        )}
       </div>
+
+      {bannerError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-[10px] border border-error/30 bg-error-soft p-3 text-sm text-error"
+        >
+          <AlertCircle size={18} aria-hidden className="mt-0.5 shrink-0" />
+          <span>{bannerError}</span>
+        </div>
+      )}
 
       {/* min-w-0 on the cells: a grid item defaults to min-width:auto, so a
           long string widens the whole page instead of wrapping. */}
-      <div className="grid gap-6 lg:grid-cols-[300px_1fr] lg:gap-8">
-      {/* Left: controls */}
-      <div className="space-y-8 min-w-0">
-        {error && (
-          <div className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error">
-            {error}
-          </div>
-        )}
-
-        <div className="space-y-3">
-          <label className="text-sm font-semibold text-foreground">
-            Nome da campanha{" "}
-            <span className="font-normal text-muted">(opcional)</span>
-          </label>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="ex.: Indicação YC"
-            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-            maxLength={100}
-          />
-          {accounts.length > 1 && (
-            <div className="pt-2">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-8">
+        {/* Left: controls */}
+        <div className="min-w-0 space-y-5 stagger">
+          <SectionCard icon={Pencil} title="Identificação">
+            <div>
+              <label htmlFor="campaign-name" className="label">
+                Nome da campanha{" "}
+                <span className="font-normal text-muted">(opcional)</span>
+              </label>
+              <input
+                id="campaign-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="ex.: Indicação YC"
+                className={fieldClass}
+                maxLength={100}
+              />
+            </div>
+            {accounts.length > 1 && (
               <AccountSelect
                 accounts={accounts}
                 value={selectedAccountId}
@@ -663,257 +740,329 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 includeAll={false}
                 label="Conta do Instagram"
               />
-            </div>
-          )}
-        </div>
+            )}
+          </SectionCard>
 
-        <Section title="Quando alguém comentar em">
-          <Radio
-            checked={triggerScope === "specific"}
-            onSelect={() => setTriggerScope("specific")}
-          >
-            um post ou reel específico
-          </Radio>
-          {triggerScope === "specific" && (
-            <div className="rounded-lg border border-border p-2">
-              <PostPicker
-                selectedPostId={postId}
-                instagramAccountId={selectedAccountId}
-                usedPostIds={usedPosts}
-                onSelect={handlePostSelect}
-              />
+          <SectionCard icon={Image} title="Quando alguém comentar em">
+            <div role="radiogroup" aria-label="Post que aciona a campanha" className="space-y-2">
+              <Radio
+                checked={triggerScope === "specific"}
+                onSelect={() => setTriggerScope("specific")}
+              >
+                um post ou reel específico
+              </Radio>
+              {triggerScope === "specific" && (
+                <div>
+                  <div className="rounded-[10px] border border-border p-2">
+                    <PostPicker
+                      selectedPostId={postId}
+                      instagramAccountId={selectedAccountId}
+                      usedPostIds={usedPosts}
+                      onSelect={handlePostSelect}
+                    />
+                  </div>
+                  <FieldError message={fieldErrors.post} />
+                </div>
+              )}
+              <Radio
+                checked={triggerScope === "any"}
+                onSelect={() => setTriggerScope("any")}
+              >
+                qualquer post ou reel
+              </Radio>
+              <Radio
+                checked={triggerScope === "next"}
+                onSelect={() => setTriggerScope("next")}
+              >
+                o próximo post ou reel
+              </Radio>
             </div>
-          )}
-          <Radio
-            checked={triggerScope === "any"}
-            onSelect={() => setTriggerScope("any")}
-          >
-            qualquer post ou reel
-          </Radio>
-          <Radio
-            checked={triggerScope === "next"}
-            onSelect={() => setTriggerScope("next")}
-          >
-            o próximo post ou reel
-          </Radio>
-        </Section>
+          </SectionCard>
 
-        <Section title="E esse comentário tiver">
-          <Radio
-            checked={matchMode === "specific"}
-            onSelect={() => setMatchMode("specific")}
-          >
-            uma ou mais palavras específicas
-          </Radio>
-          {matchMode === "specific" && (
-            <div className="space-y-1">
-              <input
-                value={keywordText}
-                onChange={(e) => setKeywordText(e.target.value)}
-                placeholder="Digite uma ou mais palavras"
-                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-              />
-              <p className="text-xs text-muted">Use vírgulas para separar as palavras</p>
+          <SectionCard icon={KeyRound} title="E esse comentário tiver">
+            <div role="radiogroup" aria-label="Palavras que acionam a campanha" className="space-y-2">
+              <Radio
+                checked={matchMode === "specific"}
+                onSelect={() => setMatchMode("specific")}
+              >
+                uma ou mais palavras específicas
+              </Radio>
+              {matchMode === "specific" && (
+                <div>
+                  <label htmlFor="campaign-keywords" className="label">
+                    Palavras-chave
+                  </label>
+                  <input
+                    id="campaign-keywords"
+                    value={keywordText}
+                    onChange={(e) => setKeywordText(e.target.value)}
+                    placeholder="Digite uma ou mais palavras"
+                    className={fieldClass}
+                  />
+                  <p className="helper">Use vírgulas para separar as palavras</p>
+                  <FieldError message={fieldErrors.keywords} />
+                </div>
+              )}
+              <Radio
+                checked={matchMode === "any"}
+                onSelect={() => setMatchMode("any")}
+              >
+                qualquer palavra
+              </Radio>
             </div>
-          )}
-          <Radio
-            checked={matchMode === "any"}
-            onSelect={() => setMatchMode("any")}
-          >
-            qualquer palavra
-          </Radio>
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
-            <span className="text-sm text-foreground">
-              também responder quando alguém mandar DM com{" "}
-              {matchMode === "any" ? "qualquer coisa" : "essas palavras"}
-            </span>
-            <Toggle
-              on={dmTriggerEnabled}
-              onToggle={() => setDmTriggerEnabled(!dmTriggerEnabled)}
-            />
-          </div>
-          {dmTriggerEnabled && (
-            <p className="text-xs text-muted">
-              {matchMode === "any"
-                ? "Toda DM para esta conta recebe a resposta abaixo. Use com cuidado."
-                : "Uma DM contendo qualquer uma dessas palavras recebe a mesma resposta, sem precisar comentar."}
-            </p>
-          )}
-          <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
-            <span className="text-sm text-foreground">
-              responder aos comentários deles no post
-            </span>
-            <Toggle
+            <div>
+              <ToggleRow
+                on={dmTriggerEnabled}
+                onToggle={() => setDmTriggerEnabled(!dmTriggerEnabled)}
+              >
+                {`também responder quando alguém mandar DM com ${
+                  matchMode === "any" ? "qualquer coisa" : "essas palavras"
+                }`}
+              </ToggleRow>
+              {dmTriggerEnabled && (
+                <p className="helper">
+                  {matchMode === "any"
+                    ? "Toda DM para esta conta recebe a resposta abaixo. Use com cuidado."
+                    : "Uma DM contendo qualquer uma dessas palavras recebe a mesma resposta, sem precisar comentar."}
+                </p>
+              )}
+            </div>
+          </SectionCard>
+
+          <SectionCard icon={MessageCircle} title="Resposta pública no post">
+            <ToggleRow
               on={publicReplyEnabled}
               onToggle={() => setPublicReplyEnabled(!publicReplyEnabled)}
-            />
-          </div>
-          {publicReplyEnabled && (
-            <div className="space-y-2">
-              {publicReplyMessages.map((msg, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input
-                    value={msg}
-                    onChange={(e) =>
-                      setPublicReplyMessages((prev) =>
-                        prev.map((m, idx) => (idx === i ? e.target.value : m))
-                      )
+            >
+              responder aos comentários deles no post
+            </ToggleRow>
+            {publicReplyEnabled && (
+              <div className="space-y-2">
+                {publicReplyMessages.map((msg, i) => (
+                  <div key={i}>
+                    <label htmlFor={`public-reply-${i}`} className="label">
+                      Resposta {i + 1}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id={`public-reply-${i}`}
+                        value={msg}
+                        onChange={(e) =>
+                          setPublicReplyMessages((prev) =>
+                            prev.map((m, idx) => (idx === i ? e.target.value : m))
+                          )
+                        }
+                        placeholder="Te mandei uma DM! 📩"
+                        maxLength={1000}
+                        className={fieldClass}
+                      />
+                      {publicReplyMessages.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPublicReplyMessages((prev) =>
+                              prev.filter((_, idx) => idx !== i)
+                            )
+                          }
+                          className="btn btn-ghost btn-sm shrink-0 px-2 hover:text-error"
+                          aria-label="Remover resposta"
+                        >
+                          <X size={18} aria-hidden />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {publicReplyMessages.length < 10 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPublicReplyMessages((prev) => [...prev, ""])
                     }
-                    placeholder="Te mandei uma DM! 📩"
-                    maxLength={1000}
-                    className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-                  />
-                  {publicReplyMessages.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setPublicReplyMessages((prev) =>
-                          prev.filter((_, idx) => idx !== i)
-                        )
-                      }
-                      className="shrink-0 px-2 text-muted hover:text-error"
-                      aria-label="Remover resposta"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              ))}
-              {publicReplyMessages.length < 10 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPublicReplyMessages((prev) => [...prev, ""])
-                  }
-                  className="text-xs font-medium text-accent hover:underline"
-                >
-                  + Adicionar outra resposta
-                </button>
-              )}
-              <p className="text-xs text-muted">
-                Uma é escolhida aleatoriamente a cada vez, para as respostas não
-                ficarem idênticas.
-              </p>
-            </div>
-          )}
-        </Section>
-
-        <Section title="A pessoa vai receber">
-          <div className="rounded-lg border border-border p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-foreground">uma DM de abertura</span>
-              <Toggle
-                on={openingDmEnabled}
-                onToggle={() => setOpeningDmEnabled(!openingDmEnabled)}
-              />
-            </div>
-            {openingDmEnabled && (
-              <div className="mt-3 space-y-2">
-                <textarea
-                  value={openingDmMessage}
-                  onChange={(e) => setOpeningDmMessage(e.target.value)}
-                  placeholder="Oi! Que bom ter você aqui 😊"
-                  rows={3}
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
-                  maxLength={1000}
-                />
-                <input
-                  value={openingDmButtonLabel}
-                  onChange={(e) => setOpeningDmButtonLabel(e.target.value)}
-                  placeholder="Me manda o link"
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-                  maxLength={64}
-                />
-              </div>
-            )}
-          </div>
-          <div className="mt-3 rounded-lg border border-border p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-foreground">
-                um pedido para seguir antes
-              </span>
-              <Toggle
-                on={requireFollow}
-                onToggle={() => setRequireFollow(!requireFollow)}
-              />
-            </div>
-            {requireFollow && (
-              <div className="mt-3 space-y-2">
-                <textarea
-                  value={followPromptMessage}
-                  onChange={(e) => setFollowPromptMessage(e.target.value)}
-                  placeholder="um favor rápido antes de eu enviar seu link. não ganho nada com isso, é de graça. se quiser me apoiar, só não deixe de me seguir depois. toque no botão quando estiver seguindo e eu te envio"
-                  rows={3}
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
-                  maxLength={1000}
-                />
-                <input
-                  value={followPromptButtonLabel}
-                  onChange={(e) => setFollowPromptButtonLabel(e.target.value)}
-                  placeholder="já estou seguindo"
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-                  maxLength={20}
-                />
-                <p className="text-xs text-muted">
-                  Enviamos o link só depois que a pessoa toca no botão e o Instagram
-                  confirma que ela segue você. Se não der para verificar, enviamos
-                  mesmo assim.
+                    className="btn btn-secondary w-full"
+                  >
+                    <Plus size={18} aria-hidden />
+                    Adicionar outra resposta
+                  </button>
+                )}
+                <p className="helper">
+                  Uma é escolhida aleatoriamente a cada vez, para as respostas não
+                  ficarem idênticas.
                 </p>
               </div>
             )}
-          </div>
-        </Section>
+          </SectionCard>
 
-        <Section title="E depois, vai receber">
-          <div className="rounded-lg border border-border p-3 space-y-2">
-            <span className="text-sm text-foreground">uma DM com um link</span>
-            <textarea
-              value={dmMessage}
-              onChange={(e) => setDmMessage(e.target.value)}
-              placeholder="Escreva uma mensagem"
-              rows={3}
-              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
-              maxLength={1000}
-            />
-            {linkOpen ? (
-              <div className="space-y-2">
-                <input
-                  value={trackedDestinationUrl}
-                  onChange={(e) => setTrackedDestinationUrl(e.target.value)}
-                  onBlur={ensureLinkToken}
-                  placeholder="https://seulink.com/oferta"
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-                />
-                <input
-                  value={linkButtonLabel}
-                  onChange={(e) => setLinkButtonLabel(e.target.value)}
-                  placeholder="Texto do botão (ex.: Abrir link)"
-                  maxLength={20}
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-                />
-                {secondLinkOpen ? (
-                  <div className="space-y-2 border-t border-border pt-2">
-                    <input
-                      value={secondaryDestinationUrl}
-                      onChange={(e) => setSecondaryDestinationUrl(e.target.value)}
-                      placeholder="https://seulink.com/segundo"
-                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
+          <SectionCard icon={Send} title="A pessoa vai receber">
+            <div>
+              <ToggleRow
+                on={openingDmEnabled}
+                onToggle={() => setOpeningDmEnabled(!openingDmEnabled)}
+              >
+                uma DM de abertura
+              </ToggleRow>
+              {openingDmEnabled && (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label htmlFor="opening-dm-message" className="label">
+                      Mensagem de abertura
+                    </label>
+                    <textarea
+                      id="opening-dm-message"
+                      value={openingDmMessage}
+                      onChange={(e) => setOpeningDmMessage(e.target.value)}
+                      placeholder="Oi! Que bom ter você aqui 😊"
+                      rows={3}
+                      className={textareaClass}
+                      maxLength={1000}
                     />
+                  </div>
+                  <div>
+                    <label htmlFor="opening-dm-button" className="label">
+                      Texto do botão
+                    </label>
                     <input
-                      value={secondaryButtonLabel}
-                      onChange={(e) => setSecondaryButtonLabel(e.target.value)}
-                      placeholder="Texto do segundo botão"
+                      id="opening-dm-button"
+                      value={openingDmButtonLabel}
+                      onChange={(e) => setOpeningDmButtonLabel(e.target.value)}
+                      placeholder="Me manda o link"
+                      className={fieldClass}
+                      maxLength={64}
+                    />
+                    <FieldError message={fieldErrors.openingDm} />
+                  </div>
+                </div>
+              )}
+            </div>
+          </SectionCard>
+
+          <SectionCard icon={UserPlus} title="Pedido para seguir">
+            <div>
+              <ToggleRow
+                on={requireFollow}
+                onToggle={() => setRequireFollow(!requireFollow)}
+              >
+                um pedido para seguir antes
+              </ToggleRow>
+              {requireFollow && (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label htmlFor="follow-prompt-message" className="label">
+                      Mensagem do pedido
+                    </label>
+                    <textarea
+                      id="follow-prompt-message"
+                      value={followPromptMessage}
+                      onChange={(e) => setFollowPromptMessage(e.target.value)}
+                      placeholder="um favor rápido antes de eu enviar seu link. não ganho nada com isso, é de graça. se quiser me apoiar, só não deixe de me seguir depois. toque no botão quando estiver seguindo e eu te envio"
+                      rows={3}
+                      className={textareaClass}
+                      maxLength={1000}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="follow-prompt-button" className="label">
+                      Texto do botão
+                    </label>
+                    <input
+                      id="follow-prompt-button"
+                      value={followPromptButtonLabel}
+                      onChange={(e) => setFollowPromptButtonLabel(e.target.value)}
+                      placeholder="já estou seguindo"
+                      className={fieldClass}
                       maxLength={20}
-                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
                     />
+                    <p className="helper">
+                      Enviamos o link só depois que a pessoa toca no botão e o Instagram
+                      confirma que ela segue você. Se não der para verificar, enviamos
+                      mesmo assim.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </SectionCard>
+
+          <SectionCard icon={Link2} title="E depois, vai receber">
+            <div>
+              <label htmlFor="dm-message" className="label">
+                uma DM com um link
+              </label>
+              <textarea
+                id="dm-message"
+                value={dmMessage}
+                onChange={(e) => setDmMessage(e.target.value)}
+                placeholder="Escreva uma mensagem"
+                rows={3}
+                className={textareaClass}
+                maxLength={1000}
+              />
+              <FieldError message={fieldErrors.dmMessage} />
+            </div>
+            {linkOpen ? (
+              <div className="space-y-3">
+                <div>
+                  <label htmlFor="tracked-url" className="label">
+                    Link de destino
+                  </label>
+                  <input
+                    id="tracked-url"
+                    value={trackedDestinationUrl}
+                    onChange={(e) => setTrackedDestinationUrl(e.target.value)}
+                    onBlur={ensureLinkToken}
+                    placeholder="https://seulink.com/oferta"
+                    className={fieldClass}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="link-button-label" className="label">
+                    Texto do botão
+                  </label>
+                  <input
+                    id="link-button-label"
+                    value={linkButtonLabel}
+                    onChange={(e) => setLinkButtonLabel(e.target.value)}
+                    placeholder="Texto do botão (ex.: Abrir link)"
+                    maxLength={20}
+                    className={fieldClass}
+                  />
+                </div>
+                {secondLinkOpen ? (
+                  <div className="space-y-3 border-t border-border pt-3">
+                    <div>
+                      <label htmlFor="secondary-url" className="label">
+                        Segundo link
+                      </label>
+                      <input
+                        id="secondary-url"
+                        value={secondaryDestinationUrl}
+                        onChange={(e) => setSecondaryDestinationUrl(e.target.value)}
+                        placeholder="https://seulink.com/segundo"
+                        className={fieldClass}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="secondary-button-label" className="label">
+                        Texto do segundo botão
+                      </label>
+                      <input
+                        id="secondary-button-label"
+                        value={secondaryButtonLabel}
+                        onChange={(e) => setSecondaryButtonLabel(e.target.value)}
+                        placeholder="Texto do segundo botão"
+                        maxLength={20}
+                        className={fieldClass}
+                      />
+                    </div>
                   </div>
                 ) : (
                   <button
                     type="button"
                     onClick={() => setSecondLinkOpen(true)}
-                    className="w-full rounded-lg border border-border py-2 text-sm text-muted hover:text-foreground"
+                    className="btn btn-secondary w-full"
                   >
-                    + Adicionar um segundo link
+                    <Plus size={18} aria-hidden />
+                    Adicionar um segundo link
                   </button>
                 )}
               </div>
@@ -921,101 +1070,164 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               <button
                 type="button"
                 onClick={() => setLinkOpen(true)}
-                className="w-full rounded-lg border border-border py-2 text-sm text-muted hover:text-foreground"
+                className="btn btn-secondary w-full"
               >
-                + Adicionar um link
+                <Plus size={18} aria-hidden />
+                Adicionar um link
               </button>
             )}
-            <p className="text-xs text-muted">
+            <p className="helper">
               {"{link}"} insere o link rastreado; {"{username}"} personaliza.
             </p>
-          </div>
-          <div className="mt-3 rounded-lg border border-border p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-foreground">
-                uma mensagem de agradecimento depois
-              </span>
-              <Toggle
+          </SectionCard>
+
+          <SectionCard icon={MessageSquareHeart} title="Agradecimento">
+            <div>
+              <ToggleRow
                 on={followUpEnabled}
                 onToggle={() => setFollowUpEnabled(!followUpEnabled)}
-              />
-            </div>
-            {followUpEnabled && (
-              <div className="mt-3 space-y-2">
-                <textarea
-                  value={followUpMessage}
-                  onChange={(e) => setFollowUpMessage(e.target.value)}
-                  placeholder="Aliás, só queria agradecer por me seguir, valeu pelo apoio 🙌"
-                  rows={3}
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
-                  maxLength={1000}
-                />
-                <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
-                  <span className="text-xs text-muted">Enviar</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={1440}
-                    value={followUpDelayMinutes}
-                    onChange={(e) =>
-                      setFollowUpDelayMinutes(
-                        Math.max(0, Math.min(1440, Math.floor(Number(e.target.value) || 0)))
-                      )
-                    }
-                    className="w-20 rounded-lg border border-border bg-surface px-2 py-1 text-sm text-foreground focus:border-accent/40 focus:outline-none"
-                  />
-                  <span className="text-xs text-muted">
-                    minutos depois do link
-                  </span>
+              >
+                uma mensagem de agradecimento depois
+              </ToggleRow>
+              {followUpEnabled && (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label htmlFor="follow-up-message" className="label">
+                      Mensagem de agradecimento
+                    </label>
+                    <textarea
+                      id="follow-up-message"
+                      value={followUpMessage}
+                      onChange={(e) => setFollowUpMessage(e.target.value)}
+                      placeholder="Aliás, só queria agradecer por me seguir, valeu pelo apoio 🙌"
+                      rows={3}
+                      className={textareaClass}
+                      maxLength={1000}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="follow-up-delay" className="label">
+                      Enviar minutos depois do link
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
+                      <span className="text-xs text-muted">Enviar</span>
+                      <input
+                        id="follow-up-delay"
+                        type="number"
+                        min={0}
+                        max={1440}
+                        value={followUpDelayMinutes}
+                        onChange={(e) =>
+                          setFollowUpDelayMinutes(
+                            Math.max(0, Math.min(1440, Math.floor(Number(e.target.value) || 0)))
+                          )
+                        }
+                        className="field w-24"
+                      />
+                      <span className="text-xs text-muted">
+                        minutos depois do link
+                      </span>
+                    </div>
+                    <p className="helper">
+                      {followUpDelayMinutes > 0
+                        ? `Enviada ${followUpDelayMinutes} min depois que a pessoa toca no link.`
+                        : "Enviada logo depois que a pessoa toca no link."}
+                      {" {username}"} personaliza. Máximo de 24 horas, para ficar dentro
+                      da janela de mensagens do Instagram.
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-muted">
-                  {followUpDelayMinutes > 0
-                    ? `Enviada ${followUpDelayMinutes} min depois que a pessoa toca no link.`
-                    : "Enviada logo depois que a pessoa toca no link."}
-                  {" {username}"} personaliza. Máximo de 24 horas, para ficar dentro
-                  da janela de mensagens do Instagram.
-                </p>
-              </div>
-            )}
-          </div>
-        </Section>
-      </div>
+              )}
+            </div>
+          </SectionCard>
+        </div>
 
-      {/* Right: preview */}
-      <div>
-        <p className="mb-4 text-sm text-muted">Prévia</p>
-        <div className="flex min-w-0 justify-center lg:sticky lg:top-6 lg:block">
-          <CampaignPreview
-            tab={previewTab}
-            onTabChange={setPreviewTab}
-            username={username}
-            avatarUrl={avatarUrl}
-            postThumb={postThumb}
-            caption={postCaption}
-            sampleComment={keywords[0] ?? ""}
-            dmTriggerEnabled={dmTriggerEnabled}
-            publicReplyEnabled={publicReplyEnabled}
-            publicReplyMessage={publicReplyMessages.find((m) => m.trim()) ?? ""}
-            openingDmEnabled={openingDmEnabled}
-            openingDmMessage={openingDmMessage}
-            openingDmButtonLabel={openingDmButtonLabel}
-            revealMessage={dmMessage}
-            hasLink={Boolean(trackedDestinationUrl.trim())}
-            linkButtonLabel={linkButtonLabel || "Abrir link"}
-            linkUrl={trackedDestinationUrl.trim() || undefined}
-            hasSecondLink={
-              secondLinkOpen && Boolean(secondaryDestinationUrl.trim())
-            }
-            secondLinkButtonLabel={secondaryButtonLabel || "Abrir link"}
-            requireFollow={requireFollow}
-            followPromptMessage={followPromptMessage}
-            followPromptButtonLabel={followPromptButtonLabel || "já estou seguindo"}
-            followUpEnabled={followUpEnabled}
-            followUpMessage={followUpMessage}
-            followUpDelayMinutes={followUpDelayMinutes}
-          />
+        {/* Right: preview */}
+        <div className="min-w-0">
+          <div className="lg:sticky lg:top-6">
+            <CampaignPreview
+              tab={previewTab}
+              onTabChange={setPreviewTab}
+              username={username}
+              avatarUrl={avatarUrl}
+              postThumb={postThumb}
+              caption={postCaption}
+              sampleComment={keywords[0] ?? ""}
+              dmTriggerEnabled={dmTriggerEnabled}
+              publicReplyEnabled={publicReplyEnabled}
+              publicReplyMessage={publicReplyMessages.find((m) => m.trim()) ?? ""}
+              openingDmEnabled={openingDmEnabled}
+              openingDmMessage={openingDmMessage}
+              openingDmButtonLabel={openingDmButtonLabel}
+              revealMessage={dmMessage}
+              hasLink={Boolean(trackedDestinationUrl.trim())}
+              linkButtonLabel={linkButtonLabel || "Abrir link"}
+              linkUrl={trackedDestinationUrl.trim() || undefined}
+              hasSecondLink={
+                secondLinkOpen && Boolean(secondaryDestinationUrl.trim())
+              }
+              secondLinkButtonLabel={secondaryButtonLabel || "Abrir link"}
+              requireFollow={requireFollow}
+              followPromptMessage={followPromptMessage}
+              followPromptButtonLabel={followPromptButtonLabel || "já estou seguindo"}
+              followUpEnabled={followUpEnabled}
+              followUpMessage={followUpMessage}
+              followUpDelayMinutes={followUpDelayMinutes}
+            />
+          </div>
         </div>
       </div>
+
+      {/* Action bar: sticky at the bottom on mobile, inline card on desktop */}
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 p-3 backdrop-blur lg:static lg:rounded-2xl lg:border lg:border-border lg:bg-surface lg:p-4 lg:shadow-[var(--shadow-card)]">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-end gap-2">
+          {importQueue && (
+            <button
+              type="button"
+              onClick={skipRow}
+              disabled={saving}
+              className="btn btn-secondary"
+            >
+              <SkipForward size={18} aria-hidden />
+              {importQueue.length > 1 ? "Pular" : "Pular e finalizar"}
+            </button>
+          )}
+          {mode === "edit" &&
+            (isActive ? (
+              <button
+                type="button"
+                onClick={() => handleSubmit(false)}
+                disabled={saving}
+                className="btn btn-secondary"
+              >
+                <Pause size={18} aria-hidden />
+                Pausar
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleSubmit(true)}
+                disabled={saving}
+                className="btn btn-secondary"
+              >
+                <Play size={18} aria-hidden />
+                Ativar
+              </button>
+            ))}
+          <button
+            type="button"
+            onClick={() => handleSubmit(mode === "new" ? true : isActive)}
+            disabled={saving}
+            className="btn btn-primary flex-1 sm:flex-none"
+          >
+            {mode === "new" ? (
+              <Play size={18} aria-hidden />
+            ) : (
+              <Check size={18} aria-hidden />
+            )}
+            {saving ? "Salvando…" : mode === "new" ? "Ativar" : "Salvar alterações"}
+          </button>
+        </div>
       </div>
     </div>
   );

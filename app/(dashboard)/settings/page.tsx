@@ -1,6 +1,17 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
+import {
+  AtSign,
+  Users,
+  Mail,
+  Copy,
+  Trash2,
+  RefreshCw,
+  Unplug,
+  MessageSquare,
+  Link2,
+} from "lucide-react";
 import type { AccountOption } from "@/components/account-select";
 import { ZernioConnection } from "@/components/zernio-connection";
 import { InstagramConnectNotice } from "@/components/instagram-connect-notice";
@@ -46,6 +57,12 @@ interface WorkspaceMembersData {
     expiresAt: string;
   }>;
 }
+
+const ROLE_LABELS: Record<"OWNER" | "ADMIN" | "MEMBER", string> = {
+  OWNER: "Dono",
+  ADMIN: "Admin",
+  MEMBER: "Membro",
+};
 
 export default function SettingsPage() {
   const [data, setData] = useState<SettingsData | null>(null);
@@ -121,7 +138,13 @@ export default function SettingsPage() {
   }
 
   if (loading) {
-    return <div className="panel rounded p-8 h-64" />;
+    return (
+      <div className="mx-auto max-w-2xl space-y-6">
+        <div className="skeleton h-56 rounded-2xl" />
+        <div className="skeleton h-48 rounded-2xl" />
+        <div className="skeleton h-24 rounded-2xl" />
+      </div>
+    );
   }
 
   const accounts = data?.instagramAccounts ?? [];
@@ -130,7 +153,7 @@ export default function SettingsPage() {
     membersData?.currentUserRole === "ADMIN";
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8">
+    <div className="mx-auto max-w-2xl space-y-6 stagger">
       {/* Surfaces the ?instagram= code the OAuth routes redirect back with.
           Needs a Suspense boundary: useSearchParams in a prerendered client
           page fails the production build without one. */}
@@ -140,127 +163,173 @@ export default function SettingsPage() {
 
       <ZernioConnection canManage={canManageMembers} />
 
-      <section className="panel rounded p-4 sm:p-6">
-        <h2 className="text-base font-semibold mb-6">Conexão com o Instagram</h2>
-
-        <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3 py-3 border-b border-border">
+      {/* Conta do Instagram */}
+      <section className="card p-4 sm:p-6">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="icon-tile bg-brand-soft text-brand" aria-hidden="true">
+              <AtSign size={20} />
+            </span>
             <div>
-              <p className="text-sm font-medium text-foreground">Status</p>
-              <p className="text-xs text-muted mt-0.5">
+              <h2 className="text-base font-extrabold text-foreground">
+                Conta do Instagram
+              </h2>
+              <p className="helper mt-0">
                 Os webhooks de comentários e as respostas privadas dependem desta conexão.
               </p>
             </div>
-            <span
-              className={`px-3 py-1.5 rounded-full text-xs font-medium ${
-                accounts.length > 0
-                  ? "bg-success/10 text-success"
-                  : "bg-warning/10 text-warning"
-              }`}
-            >
-              {accounts.length > 0 ? "Conectado" : "Não conectado"}
-            </span>
           </div>
+          <span
+            className={`badge ${
+              accounts.length > 0 ? "badge-success" : "badge-warning"
+            }`}
+          >
+            {accounts.length > 0 ? "Conectado" : "Não conectado"}
+          </span>
+        </div>
 
-          <div className="flex items-center justify-between gap-3 py-3 border-b border-border">
-            <div>
-              <p className="text-sm font-medium text-foreground">Contas</p>
-              <p className="text-xs text-muted mt-0.5">
-                {accounts.length} perfil{accounts.length === 1 ? "" : "s"} do Instagram
-                conectado{accounts.length === 1 ? "" : "s"}
-              </p>
-            </div>
-            <span className="text-sm text-muted">
-              {accounts.length > 0 ? `${accounts.length} conectada${accounts.length === 1 ? "" : "s"}` : "Nenhuma"}
-            </span>
-          </div>
-
-          <div className="space-y-3 py-3">
-            {accounts.length === 0 && (
+        <div className="mt-5 space-y-3">
+          {accounts.length === 0 && (
+            <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <span className="icon-tile bg-sun-soft text-warning" aria-hidden="true">
+                <Link2 size={22} />
+              </span>
               <p className="text-sm text-muted">
                 Conecte uma conta profissional do Instagram para lançar campanhas.
               </p>
-            )}
-            {accounts.map((account) => (
-              <div
-                key={account.id}
-                className="flex flex-col gap-3 rounded border border-border bg-surface/70 p-4 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <p className="text-sm font-semibold text-foreground">
+            </div>
+          )}
+          {accounts.map((account) => (
+            <div
+              key={account.id}
+              className="flex flex-col gap-4 rounded-2xl border border-border bg-surface p-4 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <span
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand text-base font-extrabold uppercase text-white"
+                  aria-hidden="true"
+                >
+                  {account.username.charAt(0)}
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-extrabold text-foreground">
                     @{account.username}
                   </p>
-                  <p className="mt-1 text-xs text-muted">
-                    {account.provider === "ZERNIO" ? "Conectado via Zernio" : <>Token expira em{" "}
-                    {account.tokenExpiresAt
-                      ? new Date(account.tokenExpiresAt).toLocaleDateString("pt-BR")
-                      : "data indisponível"}</>}{" "}
-                    · {account.webhookSubscribed ? "Webhook pronto" : "Webhook pendente"}
+                  <p className="mt-0.5 text-xs text-muted">
+                    {account.provider === "ZERNIO" ? (
+                      "Conectado via integração"
+                    ) : (
+                      <>
+                        Token válido até{" "}
+                        {account.tokenExpiresAt
+                          ? new Date(account.tokenExpiresAt).toLocaleDateString("pt-BR")
+                          : "data indisponível"}
+                      </>
+                    )}
                   </p>
+                  <span
+                    className={`badge mt-2 ${
+                      account.webhookSubscribed ? "badge-success" : "badge-warning"
+                    }`}
+                  >
+                    {account.webhookSubscribed ? "Webhook pronto" : "Webhook pendente"}
+                  </span>
                 </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <a href="/api/instagram/connect" className="btn btn-secondary btn-sm">
+                  <RefreshCw size={16} aria-hidden="true" />
+                  Reconectar
+                </a>
                 <button
+                  type="button"
                   onClick={() => disconnectInstagram(account.id)}
                   disabled={busy === `disconnect:${account.id}`}
-                  className="inline-flex items-center justify-center rounded border border-error/20 px-4 py-2 text-sm font-medium text-error transition-all hover:border-error/40 hover:bg-error/10 disabled:opacity-50"
+                  className="btn btn-danger btn-sm"
                 >
+                  <Unplug size={16} aria-hidden="true" />
                   {busy === `disconnect:${account.id}`
                     ? "Desconectando..."
                     : "Desconectar"}
                 </button>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
 
-        <div className="mt-6 pt-4 border-t border-border flex gap-3">
-          <a
-            href="/api/instagram/connect"
-            className="px-4 py-2 rounded text-sm font-medium transition-colors bg-accent text-white hover:bg-accent-hover"
-          >
+        <div className="mt-6 flex flex-col gap-3 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted">
+            {accounts.length > 0
+              ? `${accounts.length} perfil${accounts.length === 1 ? "" : "s"} conectado${accounts.length === 1 ? "" : "s"}`
+              : "Nenhum perfil conectado"}
+          </p>
+          <a href="/api/instagram/connect" className="btn btn-primary">
+            <AtSign size={18} aria-hidden="true" />
             Conectar usando seu próprio app da Meta
           </a>
         </div>
       </section>
 
-      <section className="panel rounded p-4 sm:p-6">
-        <h2 className="text-base font-semibold mb-6">Equipe</h2>
-        <div className="space-y-3">
+      {/* Equipe */}
+      <section className="card p-4 sm:p-6">
+        <div className="flex items-center gap-3">
+          <span className="icon-tile bg-accent-soft text-accent" aria-hidden="true">
+            <Users size={20} />
+          </span>
+          <div>
+            <h2 className="text-base font-extrabold text-foreground">Equipe</h2>
+            <p className="helper mt-0">Quem pode acessar este painel.</p>
+          </div>
+        </div>
+
+        <div className="mt-5 divide-y divide-border">
           {membersData?.members.map((member) => (
             <div
               key={member.id}
-              className="flex items-center justify-between gap-4 border-b border-border py-3 last:border-0"
+              className="flex items-center justify-between gap-4 py-3"
             >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-foreground">
-                  {member.user.name ?? member.user.email ?? "Membro desconhecido"}
-                </p>
-                <p className="text-xs text-muted">{member.user.email}</p>
+              <div className="flex min-w-0 items-center gap-3">
+                <span
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-soft text-sm font-extrabold uppercase text-brand"
+                  aria-hidden="true"
+                >
+                  {(member.user.name ?? member.user.email ?? "?").charAt(0)}
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-bold text-foreground">
+                    {member.user.name ?? member.user.email ?? "Membro desconhecido"}
+                  </p>
+                  <p className="truncate text-xs text-muted">{member.user.email}</p>
+                </div>
               </div>
-              <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold text-muted">
-                {member.role}
-              </span>
+              <span className="badge badge-neutral">{ROLE_LABELS[member.role]}</span>
             </div>
           ))}
         </div>
 
         {membersData?.invitations.length ? (
-          <div className="mt-6 border-t border-border pt-4">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          <div className="mt-5 border-t border-border pt-5">
+            <p className="mb-3 text-xs font-bold uppercase tracking-wide text-muted">
               Convites pendentes
             </p>
             <div className="space-y-3">
               {membersData.invitations.map((invitation) => (
                 <div
                   key={invitation.id}
-                  className="flex flex-col gap-3 rounded border border-border bg-surface/70 p-3 sm:flex-row sm:items-center sm:justify-between"
+                  className="flex flex-col gap-3 rounded-2xl border border-border bg-surface-hover p-3 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-foreground">
-                      {invitation.email}
-                    </p>
-                    <p className="truncate text-xs text-muted">
-                      {invitation.role} · {invitation.inviteUrl}
-                    </p>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="icon-tile bg-sun-soft text-warning" aria-hidden="true">
+                      <Mail size={18} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold text-foreground">
+                        {invitation.email}
+                      </p>
+                      <p className="truncate text-xs text-muted">
+                        {ROLE_LABELS[invitation.role]} · {invitation.inviteUrl}
+                      </p>
+                    </div>
                   </div>
                   <div className="flex gap-2">
                     <button
@@ -268,16 +337,18 @@ export default function SettingsPage() {
                       onClick={() =>
                         void navigator.clipboard?.writeText(invitation.inviteUrl)
                       }
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-border-hover hover:text-foreground"
+                      className="btn btn-secondary btn-sm"
                     >
+                      <Copy size={16} aria-hidden="true" />
                       Copiar
                     </button>
                     <button
                       type="button"
                       onClick={() => removeInvitation(invitation.id)}
                       disabled={busy === `invite:${invitation.id}`}
-                      className="rounded-lg border border-error/20 px-3 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/10 disabled:opacity-50"
+                      className="btn btn-danger btn-sm"
                     >
+                      <Trash2 size={16} aria-hidden="true" />
                       Revogar
                     </button>
                   </div>
@@ -290,52 +361,68 @@ export default function SettingsPage() {
         {canManageMembers && (
           <form
             onSubmit={inviteMember}
-            className="mt-6 grid gap-3 border-t border-border pt-4 sm:grid-cols-[1fr_140px_auto]"
+            className="mt-5 grid gap-3 border-t border-border pt-5 sm:grid-cols-[1fr_150px_auto] sm:items-end"
           >
-            <input
-              type="email"
-              value={inviteEmail}
-              onChange={(event) => setInviteEmail(event.target.value)}
-              placeholder="colega@agencia.com"
-              className="rounded border border-border bg-surface px-4 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent/40"
-              required
-            />
-            <select
-              value={inviteRole}
-              onChange={(event) =>
-                setInviteRole(event.target.value as "ADMIN" | "MEMBER")
-              }
-              className="rounded border border-border bg-surface px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-accent/40"
-            >
-              <option value="MEMBER">Membro</option>
-              <option value="ADMIN">Admin</option>
-            </select>
+            <div>
+              <label htmlFor="invite-email" className="label">
+                E-mail do convidado
+              </label>
+              <input
+                id="invite-email"
+                type="email"
+                value={inviteEmail}
+                onChange={(event) => setInviteEmail(event.target.value)}
+                placeholder="colega@agencia.com"
+                className="field"
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="invite-role" className="label">
+                Papel
+              </label>
+              <select
+                id="invite-role"
+                value={inviteRole}
+                onChange={(event) =>
+                  setInviteRole(event.target.value as "ADMIN" | "MEMBER")
+                }
+                className="field"
+              >
+                <option value="MEMBER">Membro</option>
+                <option value="ADMIN">Admin</option>
+              </select>
+            </div>
             <button
               type="submit"
               disabled={busy === "invite"}
-              className="rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+              className="btn btn-brand"
             >
+              <Mail size={18} aria-hidden="true" />
               {busy === "invite" ? "Convidando..." : "Convidar"}
             </button>
             {memberError && (
-              <p className="sm:col-span-3 text-sm text-error">{memberError}</p>
+              <p className="text-xs text-error sm:col-span-3">{memberError}</p>
             )}
           </form>
         )}
       </section>
 
-      <section className="panel rounded p-4 sm:p-6">
-        <h2 className="text-base font-semibold mb-6">Uso</h2>
-        <div className="flex items-center justify-between gap-3 py-3">
-          <div>
-            <p className="text-sm font-medium text-foreground">
-              DMs enviadas este mês
-            </p>
-            <p className="text-xs text-muted mt-0.5">
-              Auto-hospedado, sem limites de plano.
-            </p>
+      {/* Uso */}
+      <section className="card p-4 sm:p-6">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="icon-tile bg-success-soft text-success" aria-hidden="true">
+              <MessageSquare size={20} />
+            </span>
+            <div>
+              <p className="text-sm font-bold text-foreground">
+                DMs enviadas este mês
+              </p>
+              <p className="helper mt-0">Sem limites de plano.</p>
+            </div>
           </div>
-          <span className="text-sm font-semibold text-foreground">
+          <span className="text-2xl font-extrabold text-foreground">
             {data?.workspace.dmsSentThisPeriod ?? 0}
           </span>
         </div>

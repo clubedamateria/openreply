@@ -1,23 +1,47 @@
 @import "tailwindcss";
 
-/* ManyChat Alternative — Design System
-   Plain and functional. No gradients, glass, glow, or animation. */
+/* Clube da Matéria · Automações
+   Design system: friendly, warm, card-based. Brand blue + orange/yellow accents.
+   Tokens are the single source of truth. Use semantic classes below in markup. */
 
 @theme inline {
-  --color-background: #ffffff;
-  --color-foreground: #18181b;
-  --color-surface: #f7f7f8;
-  --color-surface-hover: #efeff1;
-  --color-border: #e4e4e7;
-  --color-border-hover: #d4d4d8;
-  --color-muted: #71717a;
+  /* Brand */
+  --color-brand: #0f4c9c;
+  --color-brand-hover: #0b3d7d;
+  --color-brand-soft: #e6effa;
+  --color-brand-softer: #f3f7fd;
   --color-accent: #f97316;
   --color-accent-hover: #ea580c;
-  --color-success: #16a34a;
+  --color-accent-soft: #fff1e6;
+  --color-sun: #fbbf24;
+  --color-sun-soft: #fef3c7;
+
+  /* Surfaces */
+  --color-background: #f6f8fc;
+  --color-foreground: #14213d;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f1f5fb;
+  --color-border: #e3e9f2;
+  --color-border-hover: #c9d5e6;
+  --color-muted: #64748b;
+
+  /* Status */
+  --color-success: #15803d;
+  --color-success-soft: #dcfce7;
   --color-error: #dc2626;
-  --color-warning: #d97706;
-  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, monospace;
+  --color-error-soft: #fee2e2;
+  --color-warning: #b45309;
+  --color-warning-soft: #fef3c7;
+  --color-info: #0f4c9c;
+  --color-info-soft: #e6effa;
+
+  --font-sans: "Nunito", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-card: 16px;
+  --radius-control: 10px;
+  --shadow-card: 0 1px 2px rgba(20, 33, 61, 0.04), 0 6px 20px -8px rgba(20, 33, 61, 0.12);
+  --shadow-card-hover: 0 2px 4px rgba(20, 33, 61, 0.05), 0 12px 28px -10px rgba(20, 33, 61, 0.18);
 }
 
 html {
@@ -28,25 +52,20 @@ body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Focus ring — visible, for keyboard users. */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-brand);
   outline-offset: 2px;
 }
 
-/* Form fields already have a border, so keep the focus ring hugging the
-   field instead of bleeding up toward the label above it. */
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
   outline-offset: 1px;
 }
 
-/* iOS Safari zooms the whole page in when a focused field's text is under 16px,
-   and never zooms back out. Fields are text-sm (14px) throughout, so raise them
-   to 16px on phones and leave the desktop sizing alone. */
 @media (max-width: 640px) {
   input,
   textarea,
@@ -55,54 +74,214 @@ select:focus-visible {
   }
 }
 
-/* Panel — flat container. Replaces .glass / .glass-strong. */
-.panel {
+/* ---------- Cards / panels ---------- */
+.card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
 }
-
-/* Kept as no-op aliases so existing markup degrades to plain surfaces
-   instead of breaking. Prefer .panel in new code. */
+.card-hover {
+  transition: box-shadow 180ms ease-out, transform 180ms ease-out, border-color 180ms ease-out;
+}
+.card-hover:hover {
+  box-shadow: var(--shadow-card-hover);
+  border-color: var(--color-border-hover);
+  transform: translateY(-1px);
+}
+/* Legacy aliases so untouched markup still looks fine. */
+.panel,
 .glass,
 .glass-strong {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
 }
-
 .gradient-mesh {
   background: none;
 }
 
+/* Hero band used on dashboard header / login. */
+.brand-hero {
+  background: linear-gradient(135deg, #0f4c9c 0%, #1b62bd 60%, #2f7ad8 100%);
+  color: #fff;
+  border-radius: var(--radius-card);
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0 1rem;
+  border-radius: var(--radius-control);
+  font-weight: 700;
+  font-size: 0.875rem;
+  line-height: 1;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 150ms ease-out, color 150ms ease-out, box-shadow 150ms ease-out, transform 120ms ease-out;
+  touch-action: manipulation;
+}
+.btn:active {
+  transform: scale(0.98);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+.btn-primary {
+  background: var(--color-accent);
+  color: #fff;
+  box-shadow: 0 6px 16px -6px rgba(249, 115, 22, 0.55);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+.btn-brand {
+  background: var(--color-brand);
+  color: #fff;
+}
+.btn-brand:hover:not(:disabled) {
+  background: var(--color-brand-hover);
+}
+.btn-secondary {
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  border-color: var(--color-border);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-hover);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--color-muted);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-foreground);
+}
+.btn-danger {
+  background: var(--color-error-soft);
+  color: var(--color-error);
+}
+.btn-danger:hover:not(:disabled) {
+  background: #fecaca;
+}
+.btn-sm {
+  min-height: 36px;
+  padding: 0 0.75rem;
+  font-size: 0.8125rem;
+}
+
+/* ---------- Form fields ---------- */
+.field {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.625rem 0.875rem;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  font-size: 0.875rem;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+.field::placeholder {
+  color: #94a3b8;
+}
+.field:hover {
+  border-color: var(--color-border-hover);
+}
+.field:focus {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 3px rgba(15, 76, 156, 0.15);
+  outline: none;
+}
+.label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-foreground);
+  margin-bottom: 0.375rem;
+}
+.helper {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  margin-top: 0.375rem;
+}
+
+/* ---------- Badges / chips ---------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.badge-success { background: var(--color-success-soft); color: var(--color-success); }
+.badge-error { background: var(--color-error-soft); color: var(--color-error); }
+.badge-warning { background: var(--color-warning-soft); color: var(--color-warning); }
+.badge-info { background: var(--color-info-soft); color: var(--color-info); }
+.badge-neutral { background: var(--color-surface-hover); color: var(--color-muted); }
+.badge-accent { background: var(--color-accent-soft); color: var(--color-accent-hover); }
+
+/* Icon tile used in stat cards / funnel stages. */
+.icon-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+/* ---------- Motion ---------- */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .animate-fade-in,
-.animate-slide-in,
-.animate-pulse-glow,
+.animate-slide-in {
+  animation: fade-up 220ms ease-out both;
+}
 .stagger > * {
+  animation: fade-up 220ms ease-out both;
+}
+.stagger > *:nth-child(2) { animation-delay: 40ms; }
+.stagger > *:nth-child(3) { animation-delay: 80ms; }
+.stagger > *:nth-child(4) { animation-delay: 120ms; }
+.stagger > *:nth-child(5) { animation-delay: 160ms; }
+.stagger > *:nth-child(6) { animation-delay: 200ms; }
+.animate-pulse-glow {
   animation: none;
 }
-
+.skeleton {
+  background: linear-gradient(90deg, #eef2f8 25%, #f6f8fc 50%, #eef2f8 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+  border-radius: 8px;
+}
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
+  .animate-fade-in,
+  .animate-slide-in,
+  .stagger > *,
+  .skeleton,
+  .card-hover {
+    animation: none;
+    transition: none;
   }
 }
-
-@theme inline {
-  --color-zernio-coral: #EB3514;
-  --color-zernio-cream: #F0EFEB;
-  --color-zernio-border: #D9D8D3;
-  --color-zernio-charcoal: #2D2D2D;
-}
-.zernio-sponsor { background: var(--color-zernio-cream); color: var(--color-zernio-charcoal); border-color: var(--color-zernio-border); }
-.zernio-action { background: var(--color-zernio-coral); color: white; }
-
-@font-face {
-  font-family: 'Zernio Geist';
-  src: url('/fonts/geist-latin.woff2') format('woff2');
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
-.zernio-sponsor { font-family: 'Zernio Geist', sans-serif; }

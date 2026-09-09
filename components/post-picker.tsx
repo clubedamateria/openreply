@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { Check, ImageOff, Search } from "lucide-react";
 import { readCache, writeCache } from "@/lib/client-cache";
 
 const PAGE_SIZE = 60;
@@ -102,9 +103,9 @@ export default function PostPicker({
 
   if (loading) {
     return (
-      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2" aria-busy="true">
         {[...Array(8)].map((_, i) => (
-          <div key={i} className="aspect-square rounded bg-surface" />
+          <div key={i} className="skeleton aspect-square rounded-xl" />
         ))}
       </div>
     );
@@ -112,16 +113,22 @@ export default function PostPicker({
 
   if (error) {
     return (
-      <div className="text-center py-8">
-        <p className="text-sm text-muted">{error}</p>
-        <p className="text-xs text-zinc-500 mt-1">Conecte sua conta do Instagram primeiro</p>
+      <div className="flex flex-col items-center gap-2 py-8 text-center">
+        <span className="icon-tile bg-error-soft text-error">
+          <ImageOff size={20} aria-hidden="true" />
+        </span>
+        <p className="text-sm font-bold text-foreground">{error}</p>
+        <p className="text-xs text-muted">Conecte sua conta do Instagram primeiro</p>
       </div>
     );
   }
 
   if (posts.length === 0) {
     return (
-      <div className="text-center py-8">
+      <div className="flex flex-col items-center gap-2 py-8 text-center">
+        <span className="icon-tile bg-sun-soft text-warning">
+          <ImageOff size={20} aria-hidden="true" />
+        </span>
         <p className="text-sm text-muted">Nenhum post encontrado</p>
       </div>
     );
@@ -137,22 +144,34 @@ export default function PostPicker({
   const remaining = matching.length - visible.length;
 
   return (
-    <div className="space-y-2">
-      {limitations.map(note => <p key={note} className="text-xs text-muted">{note}</p>)}
-      <div className="flex items-center justify-between gap-2">
-        <input
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            // Back to one batch on every new search. Without this, a grid
-            // expanded under an earlier query stays expanded once it is
-            // cleared, which is the case this whole change exists to avoid.
-            setShown(PAGE_SIZE);
-          }}
-          placeholder="Buscar seus posts pela legenda…"
-          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
-        />
-        <span className="shrink-0 text-xs text-muted">{posts.length}</span>
+    <div className="space-y-3">
+      {limitations.map(note => <p key={note} className="helper">{note}</p>)}
+      <div className="flex items-center gap-2">
+        <label htmlFor="post-picker-search" className="sr-only">
+          Buscar posts pela legenda
+        </label>
+        <div className="relative flex-1">
+          <Search
+            size={18}
+            aria-hidden="true"
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted"
+          />
+          <input
+            id="post-picker-search"
+            type="search"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              // Back to one batch on every new search. Without this, a grid
+              // expanded under an earlier query stays expanded once it is
+              // cleared, which is the case this whole change exists to avoid.
+              setShown(PAGE_SIZE);
+            }}
+            placeholder="Buscar seus posts pela legenda…"
+            className="field pl-10"
+          />
+        </div>
+        <span className="badge badge-neutral shrink-0">{posts.length} posts</span>
       </div>
       {visible.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted">
@@ -161,8 +180,8 @@ export default function PostPicker({
       ) : (
         <>
           {usedPostIds && Object.keys(usedPostIds).length > 0 && (
-            <p className="flex items-center gap-1.5 px-1 text-[11px] text-muted">
-              <span className="inline-block h-2.5 w-2.5 rounded-sm border border-warning/50" />
+            <p className="flex items-center gap-1.5 px-1 text-xs text-muted">
+              <span className="inline-block h-2.5 w-2.5 rounded-sm border-2 border-warning" aria-hidden="true" />
               Já em uso
             </p>
           )}
@@ -190,13 +209,15 @@ export default function PostPicker({
             aria-pressed={isSelected}
             title={isUsed ? `Já usado em "${usedByName}"` : undefined}
             className={`
-              relative aspect-square rounded overflow-hidden border-2
+              relative aspect-square overflow-hidden rounded-xl bg-surface-hover
+              transition-[transform,box-shadow,border-color] duration-150 ease-out
+              hover:-translate-y-0.5 hover:shadow-[var(--shadow-card-hover)]
               ${
                 isSelected
-                  ? "border-accent"
+                  ? "ring-2 ring-accent ring-offset-2 ring-offset-surface"
                   : isUsed
-                    ? "border-warning/40 hover:border-warning/60"
-                    : "border-border hover:border-border-hover"
+                    ? "border-2 border-warning/60 hover:border-warning"
+                    : "border border-border hover:border-border-hover"
               }
             `}
           >
@@ -209,8 +230,9 @@ export default function PostPicker({
                 className={`w-full h-full object-cover ${isUsed ? "opacity-75" : ""}`}
               />
             ) : (
-              <div className="w-full h-full bg-surface flex items-center justify-center">
-                <span className="text-xs text-muted">Sem imagem</span>
+              <div className="w-full h-full bg-surface-hover flex flex-col items-center justify-center gap-1 text-muted">
+                <ImageOff size={18} aria-hidden="true" />
+                <span className="text-xs">Sem imagem</span>
               </div>
             )}
             {showVideo && (
@@ -228,9 +250,17 @@ export default function PostPicker({
               />
             )}
             {isSelected && (
-              <span className="absolute bottom-0 inset-x-0 bg-accent text-white text-xs py-1">
-                Selecionado
-              </span>
+              <>
+                <span
+                  className="absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-accent text-white shadow"
+                  aria-hidden="true"
+                >
+                  <Check size={14} strokeWidth={3} />
+                </span>
+                <span className="absolute bottom-0 inset-x-0 bg-accent py-1 text-center text-xs font-bold text-white">
+                  Selecionado
+                </span>
+              </>
             )}
           </button>
               );
@@ -240,7 +270,7 @@ export default function PostPicker({
             <button
               type="button"
               onClick={() => setShown((n) => n + PAGE_SIZE)}
-              className="w-full rounded-lg border border-border py-2 text-sm text-muted hover:text-foreground"
+              className="btn btn-secondary w-full"
             >
               Mostrar mais {Math.min(PAGE_SIZE, remaining)}
             </button>

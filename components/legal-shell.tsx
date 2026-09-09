@@ -18,13 +18,13 @@ export default function LegalShell({
       <header className="border-b border-border">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-5">
           <Link href="/" className="flex items-center gap-3">
-            <span className="text-lg font-bold text-foreground">OpenReply</span>
+            <span className="text-lg font-extrabold text-brand">Clube da Matéria</span>
           </Link>
           <Link
             href="/login"
             className="text-sm font-semibold text-muted transition hover:text-foreground"
           >
-            Sign in
+            Entrar
           </Link>
         </div>
       </header>
