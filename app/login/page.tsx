@@ -1,4 +1,4 @@
-import { EMAIL_PROVIDER_ID, signIn } from "@/lib/auth";
+import { EMAIL_PROVIDER_ID, PASSWORD_LOGIN, signIn } from "@/lib/auth";
 import { getCampaignTemplate } from "@/lib/templates/campaign-templates";
 import { DemoNotice } from "@/components/demo-notice";
 
@@ -14,6 +14,7 @@ export default async function LoginPage({
     checkEmail?: string;
     callbackUrl?: string;
     template?: string;
+    error?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -23,6 +24,15 @@ export default async function LoginPage({
     ? `/campaigns/new?template=${selectedTemplate.slug}`
     : null;
   const callbackUrl = params.callbackUrl ?? templateCallbackUrl ?? "/dashboard";
+
+  async function signInWithPassword(formData: FormData) {
+    "use server";
+    await signIn("credentials", {
+      email: String(formData.get("email") ?? ""),
+      password: String(formData.get("password") ?? ""),
+      redirectTo: callbackUrl,
+    });
+  }
 
   async function sendMagicLink(formData: FormData) {
     "use server";
@@ -60,7 +70,45 @@ export default async function LoginPage({
             </div>
           )}
 
-          {checkEmail ? (
+          {PASSWORD_LOGIN ? (
+            <form action={signInWithPassword} className="space-y-5">
+              {params.error && (
+                <p className="text-sm text-red-400">E-mail ou senha incorretos.</p>
+              )}
+              <div className="space-y-2">
+                <label htmlFor="email" className="block text-sm font-medium text-foreground">
+                  E-mail
+                </label>
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  required
+                  autoComplete="email"
+                  className="w-full px-4 py-3 rounded bg-surface border border-border text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none transition-colors"
+                />
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="password" className="block text-sm font-medium text-foreground">
+                  Senha
+                </label>
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  required
+                  autoComplete="current-password"
+                  className="w-full px-4 py-3 rounded bg-surface border border-border text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none transition-colors"
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full inline-flex items-center justify-center gap-2 rounded bg-accent px-6 py-3.5 text-sm font-semibold text-white shadow-indigo-500/25 transition-all hover:shadow-indigo-500/30"
+              >
+                Entrar
+              </button>
+            </form>
+          ) : checkEmail ? (
             <div className="text-center py-4">
               <h2 className="text-lg font-semibold mb-2">Check your email</h2>
               <p className="text-sm text-muted">
