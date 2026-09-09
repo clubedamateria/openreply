@@ -9,14 +9,14 @@ export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can disconnect accounts" },
+      { success: false, error: "Só donos e administradores podem desconectar contas" },
       { status: 403 }
     );
   }

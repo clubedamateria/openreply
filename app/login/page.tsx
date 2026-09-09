@@ -3,8 +3,8 @@ import { getCampaignTemplate } from "@/lib/templates/campaign-templates";
 import { DemoNotice } from "@/components/demo-notice";
 
 export const metadata = {
-  title: "Login - OpenReply",
-  description: "Sign in to manage Instagram comment-to-DM campaigns.",
+  title: "Entrar - OpenReply",
+  description: "Entre para gerenciar campanhas de comentário para DM no Instagram.",
 };
 
 export default async function LoginPage({
@@ -51,8 +51,8 @@ export default async function LoginPage({
           </h1>
           <p className="text-muted text-sm leading-relaxed mt-2">
             {selectedTemplate
-              ? `Sign in to use the ${selectedTemplate.title} template.`
-              : "Sign in by email, then connect your Instagram professional account."}
+              ? `Entre para usar o modelo ${selectedTemplate.title}.`
+              : "Entre com seu e-mail e depois conecte sua conta profissional do Instagram."}
           </p>
         </div>
 
@@ -62,7 +62,7 @@ export default async function LoginPage({
           {selectedTemplate && !checkEmail && (
             <div className="mb-5 border border-accent/20 bg-accent/10 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-accent">
-                Template selected
+                Modelo selecionado
               </p>
               <p className="mt-2 text-sm font-semibold text-foreground">
                 {selectedTemplate.title}
@@ -110,10 +110,10 @@ export default async function LoginPage({
             </form>
           ) : checkEmail ? (
             <div className="text-center py-4">
-              <h2 className="text-lg font-semibold mb-2">Check your email</h2>
+              <h2 className="text-lg font-semibold mb-2">Verifique seu e-mail</h2>
               <p className="text-sm text-muted">
-                We sent you a secure sign-in link. Open it on this device to
-                continue.
+                Enviamos um link seguro de acesso. Abra-o neste dispositivo para
+                continuar.
               </p>
             </div>
           ) : (
@@ -123,7 +123,7 @@ export default async function LoginPage({
                   htmlFor="email"
                   className="block text-sm font-medium text-foreground"
                 >
-                  Work email
+                  E-mail profissional
                 </label>
                 <input
                   id="email"
@@ -131,7 +131,7 @@ export default async function LoginPage({
                   type="email"
                   required
                   autoComplete="email"
-                  placeholder="you@company.com"
+                  placeholder="voce@empresa.com"
                   className="w-full px-4 py-3 rounded bg-surface border border-border text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none transition-colors"
                 />
               </div>
@@ -140,7 +140,7 @@ export default async function LoginPage({
                 type="submit"
                 className="w-full inline-flex items-center justify-center gap-2 rounded bg-accent px-6 py-3.5 text-sm font-semibold text-white shadow-indigo-500/25 transition-all hover:shadow-indigo-500/30"
               >
-                Email me a magic link
+                Enviar link mágico por e-mail
               </button>
             </form>
           )}

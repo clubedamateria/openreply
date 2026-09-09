@@ -15,7 +15,7 @@ export default function TemplateVisual({
         <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Comment trigger
+              Gatilho por comentário
             </p>
             <p className="mt-1 text-sm font-bold text-white">
               {template.triggerExample}
@@ -29,7 +29,7 @@ export default function TemplateVisual({
         <div className={`grid gap-3 pt-4 ${compact ? "" : "sm:grid-cols-2"}`}>
           <div className="border border-white/10 bg-white/[0.035] p-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Keywords
+              Palavras-chave
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               {template.keywords.map((keyword) => (
@@ -44,7 +44,7 @@ export default function TemplateVisual({
           </div>
           <div className="border border-white/10 bg-white/[0.035] p-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Private reply
+              Resposta privada
             </p>
             <p className="mt-3 text-sm leading-6 text-zinc-200">
               {template.privateReplyPreview}

@@ -64,11 +64,11 @@ const createAutomationSchema = z
   // A campaign must target a specific post, any post, or the next reel.
   .refine(
     (d) => d.matchAnyPost || d.pendingNextReel || Boolean(d.postId),
-    { message: "Choose which post(s) trigger the campaign", path: ["postId"] }
+    { message: "Escolha qual(is) post(s) acionam a campanha", path: ["postId"] }
   )
   // And it must match either specific words or any word.
   .refine((d) => d.matchAnyWord || d.keywords.length >= 1, {
-    message: "Add at least one keyword, or match any word",
+    message: "Adicione pelo menos uma palavra-chave ou aceite qualquer palavra",
     path: ["keywords"],
   })
   // An opening DM needs both a message and a button label.
@@ -77,7 +77,7 @@ const createAutomationSchema = z
       !d.openingDmEnabled ||
       (Boolean(d.openingDmMessage?.trim()) &&
         Boolean(d.openingDmButtonLabel?.trim())),
-    { message: "Opening DM needs a message and a button label", path: ["openingDmMessage"] }
+    { message: "A DM de abertura precisa de uma mensagem e do texto do botão", path: ["openingDmMessage"] }
   );
 
 const updateAutomationSchema = z.object({
@@ -125,7 +125,7 @@ export async function GET(request: NextRequest) {
   const workspaceId = await getCurrentWorkspaceId();
   if (!workspaceId) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
@@ -279,14 +279,14 @@ export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can create campaigns" },
+      { success: false, error: "Só donos e administradores podem criar campanhas" },
       { status: 403 }
     );
   }
@@ -300,7 +300,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: "Invalid input",
+        error: "Dados inválidos",
         details: parsed.error.flatten(),
       },
       { status: 400 }
@@ -329,14 +329,14 @@ export async function POST(request: NextRequest) {
 
   if (!workspace) {
     return NextResponse.json(
-      { success: false, error: "Workspace not found" },
+      { success: false, error: "Workspace não encontrado" },
       { status: 404 }
     );
   }
 
   if (!instagramAccount) {
     return NextResponse.json(
-      { success: false, error: "Connect Instagram before creating campaigns" },
+      { success: false, error: "Conecte o Instagram antes de criar campanhas" },
       { status: 400 }
     );
   }
@@ -449,14 +449,14 @@ export async function PATCH(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can update campaigns" },
+      { success: false, error: "Só donos e administradores podem editar campanhas" },
       { status: 403 }
     );
   }
@@ -466,7 +466,7 @@ export async function PATCH(request: NextRequest) {
   const automationId = request.nextUrl.searchParams.get("id");
   if (!automationId) {
     return NextResponse.json(
-      { success: false, error: "Missing campaign ID" },
+      { success: false, error: "ID da campanha ausente" },
       { status: 400 }
     );
   }
@@ -478,7 +478,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: "Invalid input",
+        error: "Dados inválidos",
         details: parsed.error.flatten(),
       },
       { status: 400 }
@@ -491,7 +491,7 @@ export async function PATCH(request: NextRequest) {
 
   if (!existing) {
     return NextResponse.json(
-      { success: false, error: "Campaign not found" },
+      { success: false, error: "Campanha não encontrada" },
       { status: 404 }
     );
   }
@@ -611,14 +611,14 @@ export async function DELETE(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can delete campaigns" },
+      { success: false, error: "Só donos e administradores podem excluir campanhas" },
       { status: 403 }
     );
   }
@@ -628,7 +628,7 @@ export async function DELETE(request: NextRequest) {
   const automationId = request.nextUrl.searchParams.get("id");
   if (!automationId) {
     return NextResponse.json(
-      { success: false, error: "Missing campaign ID" },
+      { success: false, error: "ID da campanha ausente" },
       { status: 400 }
     );
   }
@@ -639,7 +639,7 @@ export async function DELETE(request: NextRequest) {
 
   if (!existing) {
     return NextResponse.json(
-      { success: false, error: "Campaign not found" },
+      { success: false, error: "Campanha não encontrada" },
       { status: 404 }
     );
   }

@@ -9,14 +9,14 @@ export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can create campaigns" },
+      { success: false, error: "Só donos e administradores podem criar campanhas" },
       { status: 403 }
     );
   }
@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
   const automationId = request.nextUrl.searchParams.get("id");
   if (!automationId) {
     return NextResponse.json(
-      { success: false, error: "Missing campaign ID" },
+      { success: false, error: "ID da campanha ausente" },
       { status: 400 }
     );
   }
@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
 
   if (!duplicate) {
     return NextResponse.json(
-      { success: false, error: "Campaign not found" },
+      { success: false, error: "Campanha não encontrada" },
       { status: 404 }
     );
   }

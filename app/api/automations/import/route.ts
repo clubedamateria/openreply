@@ -31,13 +31,13 @@ export async function POST(request: NextRequest) {
   const context = await getCurrentWorkspaceContext();
   if (!context) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
-      { success: false, error: "Only owners and admins can import campaigns" },
+      { success: false, error: "Só donos e administradores podem importar campanhas" },
       { status: 403 }
     );
   }
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
   const parsed = importSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { success: false, error: "Invalid import data" },
+      { success: false, error: "Dados de importação inválidos" },
       { status: 400 }
     );
   }
@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
   );
   if (!account) {
     return NextResponse.json(
-      { success: false, error: "Instagram account not found" },
+      { success: false, error: "Conta do Instagram não encontrada" },
       { status: 400 }
     );
   }

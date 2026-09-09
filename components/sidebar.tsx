@@ -12,13 +12,13 @@ import { zernioLink } from "@/lib/zernio-links";
 import { usePathname } from "next/navigation";
 
 const navItems = [
-  { label: "Dashboard", href: "/dashboard" },
-  { label: "Overview", href: "/overview" },
-  { label: "Inbox", href: "/inbox" },
-  { label: "Campaigns", href: "/campaigns" },
-  { label: "DM Logs", href: "/logs" },
-  { label: "Settings", href: "/settings" },
-  { label: "Diagnostics", href: "/diagnostics" },
+  { label: "Painel", href: "/dashboard" },
+  { label: "Visão geral", href: "/overview" },
+  { label: "Caixa de entrada", href: "/inbox" },
+  { label: "Campanhas", href: "/campaigns" },
+  { label: "Registros de DM", href: "/logs" },
+  { label: "Configurações", href: "/settings" },
+  { label: "Diagnóstico", href: "/diagnostics" },
 ];
 
 interface SidebarProps {
@@ -90,14 +90,14 @@ export default function Sidebar({
 
         <div className="px-5 py-4 border-t border-border">
           <p className="text-sm text-foreground truncate">{workspaceName}</p>
-          <p className="text-xs text-muted">Self-hosted</p>
+          <p className="text-xs text-muted">Auto-hospedado</p>
           <a
             href={zernioLink({ placement: "sidebar" })}
             target="_blank"
             rel="sponsored noopener noreferrer"
             className="mt-4 flex items-center gap-3 text-xs text-muted hover:text-foreground"
           >
-            <span>Supported by</span>
+            <span>Apoiado por</span>
             <Image
               src="/brand/zernio-primary.svg"
               alt="Zernio"

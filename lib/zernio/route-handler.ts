@@ -20,14 +20,14 @@ export function withZernioManagement(handler: (context: WorkspaceContext, reques
       }
       return await handler(context, request);
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return NextResponse.json({ success: false, error: 'This connection was already added. Refresh and try again.' }, { status: 409 });
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return NextResponse.json({ success: false, error: 'Essa conexão já foi adicionada. Atualize a página e tente de novo.' }, { status: 409 });
       if (error instanceof ConnectionError) return NextResponse.json({ success: false, error: error.message }, { status: error.status });
-      if (error instanceof z.ZodError) return NextResponse.json({ success: false, error: 'Unexpected Zernio response. Please retry or contact support.' }, { status: 502 });
+      if (error instanceof z.ZodError) return NextResponse.json({ success: false, error: 'Resposta inesperada do Zernio. Tente de novo ou fale com o suporte.' }, { status: 502 });
       if (error instanceof MetaApiError) {
         const message = error.code === 401 ? 'The Zernio API key is invalid or expired.' : error.code === 403 ? 'Use an unrestricted, read-write Zernio key with access to this profile and Inbox.' : error.code === 402 ? 'This Zernio account needs Inbox access. Check your Zernio plan.' : error.message;
         return NextResponse.json({ success: false, error: message }, { status: 502 });
       }
-      return NextResponse.json({ success: false, error: 'Could not configure Zernio. Please retry.' }, { status: 502 });
+      return NextResponse.json({ success: false, error: 'Não foi possível configurar o Zernio. Tente de novo.' }, { status: 502 });
     }
   };
 }

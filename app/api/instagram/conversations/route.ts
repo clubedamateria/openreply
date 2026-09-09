@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
   const workspaceId = await getCurrentWorkspaceId();
   if (!workspaceId) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
   );
   if (!account) {
     return NextResponse.json(
-      { success: false, error: "Instagram account not connected." },
+      { success: false, error: "Conta do Instagram não conectada." },
       { status: 400 }
     );
   }
@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
   const workspaceId = await getCurrentWorkspaceId();
   if (!workspaceId) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
     body = await request.json();
   } catch {
     return NextResponse.json(
-      { success: false, error: "Invalid request body" },
+      { success: false, error: "Corpo da requisição inválido" },
       { status: 400 }
     );
   }
@@ -126,7 +126,7 @@ export async function POST(request: NextRequest) {
   const text = body.text?.trim();
   if (!body.recipientId || !text) {
     return NextResponse.json(
-      { success: false, error: "A recipient and message are required." },
+      { success: false, error: "Destinatário e mensagem são obrigatórios." },
       { status: 400 }
     );
   }
@@ -137,7 +137,7 @@ export async function POST(request: NextRequest) {
   );
   if (!account) {
     return NextResponse.json(
-      { success: false, error: "Instagram account not connected." },
+      { success: false, error: "Conta do Instagram não conectada." },
       { status: 400 }
     );
   }
@@ -156,7 +156,7 @@ export async function POST(request: NextRequest) {
     // Surface Meta's own message — the common case is the 24-hour messaging
     // window having closed, which the user needs to see explicitly.
     const message =
-      err instanceof MetaApiError ? err.message : "Failed to send message";
+      err instanceof MetaApiError ? err.message : "Falha ao enviar a mensagem";
     return NextResponse.json(
       { success: false, error: message },
       { status: 502 }

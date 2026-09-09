@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   const workspaceId = await getCurrentWorkspaceId();
   if (!workspaceId) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
   );
   if (!account) {
     return NextResponse.json(
-      { success: false, error: "Instagram account not connected" },
+      { success: false, error: "Conta do Instagram não conectada" },
       { status: 400 }
     );
   }
@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     console.error("[Instagram Profile] Error:", err);
     return NextResponse.json(
-      { success: false, error: "Failed to load profile" },
+      { success: false, error: "Falha ao carregar o perfil" },
       { status: 500 }
     );
   }

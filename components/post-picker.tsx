@@ -85,11 +85,11 @@ export default function PostPicker({
           setLimitations(data.limitations ?? []);
           writeCache(cacheKey, data.data);
         } else if (!cached.data) {
-          setError(data.error ?? "Failed to load posts");
+          setError(data.error ?? "Falha ao carregar os posts");
         }
       })
       .catch(() => {
-        if (!cancelled && !cached.data) setError("Failed to load posts");
+        if (!cancelled && !cached.data) setError("Falha ao carregar os posts");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -114,7 +114,7 @@ export default function PostPicker({
     return (
       <div className="text-center py-8">
         <p className="text-sm text-muted">{error}</p>
-        <p className="text-xs text-zinc-500 mt-1">Connect your Instagram account first</p>
+        <p className="text-xs text-zinc-500 mt-1">Conecte sua conta do Instagram primeiro</p>
       </div>
     );
   }
@@ -122,7 +122,7 @@ export default function PostPicker({
   if (posts.length === 0) {
     return (
       <div className="text-center py-8">
-        <p className="text-sm text-muted">No posts found</p>
+        <p className="text-sm text-muted">Nenhum post encontrado</p>
       </div>
     );
   }
@@ -149,21 +149,21 @@ export default function PostPicker({
             // cleared, which is the case this whole change exists to avoid.
             setShown(PAGE_SIZE);
           }}
-          placeholder="Search your posts by caption…"
+          placeholder="Buscar seus posts pela legenda…"
           className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
         />
         <span className="shrink-0 text-xs text-muted">{posts.length}</span>
       </div>
       {visible.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted">
-          No posts match &ldquo;{query}&rdquo;
+          Nenhum post corresponde a &ldquo;{query}&rdquo;
         </p>
       ) : (
         <>
           {usedPostIds && Object.keys(usedPostIds).length > 0 && (
             <p className="flex items-center gap-1.5 px-1 text-[11px] text-muted">
               <span className="inline-block h-2.5 w-2.5 rounded-sm border border-warning/50" />
-              Already used
+              Já em uso
             </p>
           )}
           {/* auto-rows-min + content-start keep each row at its natural height.
@@ -188,7 +188,7 @@ export default function PostPicker({
               setHoveredId((cur) => (cur === post.id ? null : cur))
             }
             aria-pressed={isSelected}
-            title={isUsed ? `Already used by "${usedByName}"` : undefined}
+            title={isUsed ? `Já usado em "${usedByName}"` : undefined}
             className={`
               relative aspect-square rounded overflow-hidden border-2
               ${
@@ -203,14 +203,14 @@ export default function PostPicker({
             {thumb ? (
               <img
                 src={thumb}
-                alt={post.caption?.slice(0, 50) ?? "Instagram post"}
+                alt={post.caption?.slice(0, 50) ?? "Post do Instagram"}
                 loading="lazy"
                 decoding="async"
                 className={`w-full h-full object-cover ${isUsed ? "opacity-75" : ""}`}
               />
             ) : (
               <div className="w-full h-full bg-surface flex items-center justify-center">
-                <span className="text-xs text-muted">No image</span>
+                <span className="text-xs text-muted">Sem imagem</span>
               </div>
             )}
             {showVideo && (
@@ -229,7 +229,7 @@ export default function PostPicker({
             )}
             {isSelected && (
               <span className="absolute bottom-0 inset-x-0 bg-accent text-white text-xs py-1">
-                Selected
+                Selecionado
               </span>
             )}
           </button>
@@ -242,7 +242,7 @@ export default function PostPicker({
               onClick={() => setShown((n) => n + PAGE_SIZE)}
               className="w-full rounded-lg border border-border py-2 text-sm text-muted hover:text-foreground"
             >
-              Show {Math.min(PAGE_SIZE, remaining)} more
+              Mostrar mais {Math.min(PAGE_SIZE, remaining)}
             </button>
           )}
         </>

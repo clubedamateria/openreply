@@ -99,7 +99,7 @@ export async function GET(request: NextRequest) {
   const workspaceId = await getCurrentWorkspaceId();
   if (!workspaceId) {
     return NextResponse.json(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Não autorizado" },
       { status: 401 }
     );
   }
@@ -114,7 +114,7 @@ export async function GET(request: NextRequest) {
       {
         success: false,
         error:
-          "Instagram account not connected. Please connect your account first.",
+          "Conta do Instagram não conectada. Conecte sua conta primeiro.",
       },
       { status: 400 }
     );
@@ -264,7 +264,7 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     console.error("[Instagram Overview] Error:", err);
     return NextResponse.json(
-      { success: false, error: "Failed to load Instagram overview" },
+      { success: false, error: "Falha ao carregar a visão geral do Instagram" },
       { status: 500 }
     );
   }
