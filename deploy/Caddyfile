@@ -1,0 +1,6 @@
+# HTTPS automático. SITE_ADDRESS vem do .env.prod (ex: ig.clubedamateria.com.br
+# ou 1.2.3.4.sslip.io enquanto não tiver subdomínio).
+{$SITE_ADDRESS} {
+    encode gzip
+    reverse_proxy web:3000
+}
