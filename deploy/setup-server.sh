@@ -15,7 +15,13 @@ if command -v iptables >/dev/null; then
   sudo netfilter-persistent save 2>/dev/null || true
 fi
 
+if [ ! -f /swapfile ]; then
+  sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+  echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+fi
+
 cd "$(dirname "$0")/.."
-sudo docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod up -d --build
+sudo docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod pull
+sudo docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod up -d
 echo
 echo "Subiu. Health: https://$(grep ^SITE_ADDRESS deploy/.env.prod | cut -d= -f2)/api/health"

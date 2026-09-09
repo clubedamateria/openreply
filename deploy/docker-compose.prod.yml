@@ -2,7 +2,7 @@
 # Sobe: Postgres, Redis, web (Next.js), worker (envia as DMs), cron (renova token)
 # e Caddy (HTTPS automático com Let's Encrypt).
 #
-#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod up -d --build
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod pull && docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod up -d
 
 services:
   postgres:
@@ -33,10 +33,8 @@ services:
       retries: 10
 
   web:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    image: openreply:local
+    # imagem montada pelo GitHub Actions (.github/workflows/docker-image.yml)
+    image: ghcr.io/clubedamateria/openreply:deploy
     restart: unless-stopped
     # migração roda aqui, no start, quando o banco já está na rede (não no build)
     command: ["sh", "-c", "npx prisma migrate deploy && npm run start"]
@@ -57,7 +55,7 @@ services:
       start_period: 60s
 
   worker:
-    image: openreply:local
+    image: ghcr.io/clubedamateria/openreply:deploy
     restart: unless-stopped
     command: ["npm", "run", "worker"]
     env_file: .env.prod
@@ -69,7 +67,7 @@ services:
         condition: service_healthy
 
   cron:
-    image: openreply:local
+    image: ghcr.io/clubedamateria/openreply:deploy
     restart: unless-stopped
     command: ["sh", "scripts/cron.sh"]
     environment:
