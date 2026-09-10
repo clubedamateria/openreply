@@ -84,11 +84,15 @@ export async function GET(request: NextRequest) {
     }
 
     const baseWhere = { workspaceId, ...accountFilter, ...dateFilter };
+    const notReveal = { NOT: { commentId: { startsWith: "reveal:" } } };
 
-    const [comentarios, palavraChave, dmEnviada, cliqueLink, automations, dmByAutomation, clicksByAutomation, quiz] =
+    const [comentarios, palavraChave, dmEnviada, cliqueLink, automations, dmByAutomation, commentsByAutomation, clicksByAutomation, quiz] =
       await Promise.all([
-        prisma.dmLog.count({ where: baseWhere }),
-        prisma.dmLog.count({ where: { ...baseWhere, status: { not: "SKIPPED_NO_MATCH" } } }),
+        // Um comentário gera até 2 registros: o comentário em si e o DM de
+        // "revelar link" após o toque no botão (commentId "reveal:<id>").
+        // Só o primeiro conta como comentário captado.
+        prisma.dmLog.count({ where: { ...baseWhere, ...notReveal } }),
+        prisma.dmLog.count({ where: { ...baseWhere, ...notReveal, status: { not: "SKIPPED_NO_MATCH" } } }),
         prisma.dmLog.count({ where: { ...baseWhere, status: "SENT" } }),
         prisma.linkClick.count({ where: baseWhere }),
         prisma.automation.findMany({
@@ -101,6 +105,11 @@ export async function GET(request: NextRequest) {
           where: baseWhere,
           _count: { _all: true },
         }),
+        prisma.dmLog.groupBy({
+          by: ["automationId"],
+          where: { ...baseWhere, ...notReveal },
+          _count: { _all: true },
+        }),
         prisma.linkClick.groupBy({
           by: ["automationId"],
           where: baseWhere,
@@ -110,11 +119,11 @@ export async function GET(request: NextRequest) {
       ]);
 
     const byCampaign = automations.map((a) => {
-      let comments = 0;
+      const comments =
+        commentsByAutomation.find((row) => row.automationId === a.id)?._count._all ?? 0;
       let sent = 0;
       for (const row of dmByAutomation) {
         if (row.automationId !== a.id) continue;
-        comments += row._count._all;
         if (row.status === "SENT") sent += row._count._all;
       }
       const clicks =

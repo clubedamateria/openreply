@@ -43,6 +43,7 @@ interface DashboardStats {
   dmsSentMonth: number;
   dmsSkippedMonth: number;
   dmsFailedMonth: number;
+  commentsMonth: number;
   totalDMs: number;
   clicksThisMonth: number;
   totalClicks: number;
@@ -188,8 +189,7 @@ export default function DashboardPage() {
     stats?.instagramAccounts[0];
   const dmsToday = stats?.dmsSentToday ?? 0;
 
-  const captured =
-    (stats?.totalDMs ?? 0) + (stats?.dmsSkippedMonth ?? 0) + (stats?.dmsFailedMonth ?? 0);
+  const captured = stats?.commentsMonth ?? 0;
   const sent = stats?.dmsSentMonth ?? 0;
   const clicks = stats?.clicksThisMonth ?? 0;
   const funnel = [
