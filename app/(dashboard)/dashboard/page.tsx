@@ -266,7 +266,7 @@ export default function DashboardPage() {
         />
         <StatCard
           label="DMs no mês"
-          value={sent}
+          value={stats?.dmsSentMonth ?? 0}
           icon={<MessagesSquare size={20} aria-hidden="true" />}
           tone="brand"
         />
