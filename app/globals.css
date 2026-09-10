@@ -74,6 +74,7 @@ select:focus-visible {
   }
 }
 
+@layer components {
 /* ---------- Cards / panels ---------- */
 .card {
   background: var(--color-surface);
@@ -284,4 +285,6 @@ select:focus-visible {
     animation: none;
     transition: none;
   }
+}
+
 }

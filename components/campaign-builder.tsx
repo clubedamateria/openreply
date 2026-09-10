@@ -722,7 +722,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 id="campaign-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="ex.: Indicação YC"
+                placeholder="ex.: Flashcards de inglês"
                 className={fieldClass}
                 maxLength={100}
               />
