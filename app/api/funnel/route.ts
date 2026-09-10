@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
     const baseWhere = { workspaceId, ...accountFilter, ...dateFilter };
     const notReveal = { NOT: { commentId: { startsWith: "reveal:" } } };
 
-    const [comentarios, palavraChave, dmEnviada, cliqueLink, automations, dmByAutomation, commentsByAutomation, clicksByAutomation, quiz] =
+    const [comentarios, palavraChave, dmEnviada, conversaRows, cliqueLink, automations, dmByAutomation, commentsByAutomation, clicksByAutomation, quiz] =
       await Promise.all([
         // Um comentário gera até 2 registros: o comentário em si e o DM de
         // "revelar link" após o toque no botão (commentId "reveal:<id>").
@@ -94,6 +94,11 @@ export async function GET(request: NextRequest) {
         prisma.dmLog.count({ where: { ...baseWhere, ...notReveal } }),
         prisma.dmLog.count({ where: { ...baseWhere, ...notReveal, status: { not: "SKIPPED_NO_MATCH" } } }),
         prisma.dmLog.count({ where: { ...baseWhere, status: "SENT" } }),
+        prisma.dmLog.findMany({
+          where: { ...baseWhere, status: "SENT" },
+          distinct: ["commenterId"],
+          select: { commenterId: true },
+        }),
         prisma.linkClick.count({ where: baseWhere }),
         prisma.automation.findMany({
           where: { workspaceId, ...accountFilter },
@@ -135,7 +140,7 @@ export async function GET(request: NextRequest) {
       success: true,
       data: {
         range,
-        stages: { comentarios, palavraChave, dmEnviada, cliqueLink },
+        stages: { comentarios, palavraChave, conversas: conversaRows.length, dmEnviada, cliqueLink },
         byCampaign,
         quiz,
       },

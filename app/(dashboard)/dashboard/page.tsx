@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
-  CalendarDays,
+  Users,
   Inbox,
   Megaphone,
   MessagesSquare,
@@ -44,6 +44,7 @@ interface DashboardStats {
   dmsSkippedMonth: number;
   dmsFailedMonth: number;
   commentsMonth: number;
+  conversationsMonth: number;
   totalDMs: number;
   clicksThisMonth: number;
   totalClicks: number;
@@ -190,11 +191,11 @@ export default function DashboardPage() {
   const dmsToday = stats?.dmsSentToday ?? 0;
 
   const captured = stats?.commentsMonth ?? 0;
-  const sent = stats?.dmsSentMonth ?? 0;
+  const conversations = stats?.conversationsMonth ?? 0;
   const clicks = stats?.clicksThisMonth ?? 0;
   const funnel = [
     { label: "Comentários captados", value: captured },
-    { label: "DMs enviadas", value: sent },
+    { label: "Conversas iniciadas", value: conversations },
     { label: "Cliques", value: clicks },
   ];
 
@@ -257,9 +258,10 @@ export default function DashboardPage() {
           tone="accent"
         />
         <StatCard
-          label="DMs 7 dias"
-          value={stats?.dmsSentWeek ?? 0}
-          icon={<CalendarDays size={20} aria-hidden="true" />}
+          label="Conversas iniciadas"
+          value={stats?.conversationsMonth ?? 0}
+          hint="pessoas no mês"
+          icon={<Users size={20} aria-hidden="true" />}
           tone="info"
         />
         <StatCard

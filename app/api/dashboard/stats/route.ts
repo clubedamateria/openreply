@@ -51,6 +51,7 @@ export async function GET(request: NextRequest) {
     user,
     contactRows,
     commentsMonth,
+    conversationRows,
   ] = await Promise.all([
     prisma.workspace.findUnique({
       where: { id: workspaceId },
@@ -160,6 +161,18 @@ export async function GET(request: NextRequest) {
         ...accountFilter,
       },
     }),
+    // Conversas iniciadas no mês: pessoas distintas que receberam ao menos
+    // uma DM (várias mensagens para a mesma pessoa contam uma vez).
+    prisma.dmLog.findMany({
+      where: {
+        workspaceId,
+        status: "SENT",
+        createdAt: { gte: monthStart },
+        ...accountFilter,
+      },
+      distinct: ["commenterId"],
+      select: { commenterId: true },
+    }),
   ]);
 
   const dailyDMs: { date: string; isoDate: string; count: number }[] = [];
@@ -220,6 +233,7 @@ export async function GET(request: NextRequest) {
       dmsSkippedMonth: monthlyStatusSummary.skipped,
       dmsFailedMonth: monthlyStatusSummary.failed,
       commentsMonth,
+      conversationsMonth: conversationRows.length,
       totalDMs,
       clicksThisMonth,
       totalClicks,

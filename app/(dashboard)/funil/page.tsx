@@ -26,6 +26,7 @@ interface FunnelData {
   stages: {
     comentarios: number;
     palavraChave: number;
+    conversas: number;
     dmEnviada: number;
     cliqueLink: number;
   };
@@ -118,9 +119,10 @@ export default function FunilPage() {
           icon: <KeyRound size={22} aria-hidden="true" />,
         },
         {
-          key: "dmEnviada",
-          label: "DMs enviadas",
-          value: data.stages.dmEnviada,
+          key: "conversas",
+          label: "Conversas iniciadas",
+          value: data.stages.conversas,
+          hint: `${data.stages.dmEnviada} ${data.stages.dmEnviada === 1 ? "DM enviada" : "DMs enviadas"}`,
           icon: <Send size={22} aria-hidden="true" />,
         },
         {
@@ -232,6 +234,9 @@ export default function FunilPage() {
                             {fmt(stage.value)}
                           </p>
                           <p className="text-sm text-muted">{stage.label}</p>
+                          {"hint" in stage && stage.hint ? (
+                            <p className="mt-1 text-xs font-bold text-brand">{stage.hint}</p>
+                          ) : null}
                         </div>
                         <div
                           className="h-2 w-full rounded-full bg-surface-hover overflow-hidden"
