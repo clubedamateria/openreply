@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   createScheduledPostSchema,
+  isScheduledForTooFarInThePast,
   scheduledPostActionSchema,
 } from "../lib/scheduled-posts/schema";
 
+// Valid content-addressed filenames (see lib/scheduled-posts/paths.ts):
+// `<16 lowercase hex>-<id, 6+ base64url chars>.(mp4|jpg)`.
+const mp4 = (n: number) => `${n.toString(16).padStart(16, "0")}-aaaaaa.mp4`;
+const jpg = (n: number) => `${n.toString(16).padStart(16, "0")}-bbbbbb.jpg`;
+
+const NOW = new Date("2026-09-27T12:00:00.000Z");
+const FUTURE = "2026-10-01T15:00:00.000Z";
+
 const validBase = {
   mediaType: "REELS" as const,
-  storagePaths: ["instagram/minha_conta/video.mp4"],
+  storagePaths: [mp4(1)],
   caption: "Legenda #hashtag",
-  scheduledFor: "2026-10-01T15:00:00.000Z",
+  scheduledFor: FUTURE,
   username: "minha_conta",
 };
 
@@ -38,7 +47,7 @@ describe("createScheduledPostSchema", () => {
   it("rejects REELS/IMAGE with more than one storage path", () => {
     const result = createScheduledPostSchema.safeParse({
       ...validBase,
-      storagePaths: ["a.mp4", "b.mp4"],
+      storagePaths: [mp4(1), mp4(2)],
     });
     expect(result.success).toBe(false);
   });
@@ -47,7 +56,7 @@ describe("createScheduledPostSchema", () => {
     const result = createScheduledPostSchema.safeParse({
       ...validBase,
       mediaType: "CAROUSEL",
-      storagePaths: ["only-one.jpg"],
+      storagePaths: [jpg(1)],
     });
     expect(result.success).toBe(false);
   });
@@ -56,7 +65,7 @@ describe("createScheduledPostSchema", () => {
     const result = createScheduledPostSchema.safeParse({
       ...validBase,
       mediaType: "CAROUSEL",
-      storagePaths: ["a.jpg", "b.jpg", "c.jpg"],
+      storagePaths: [jpg(1), jpg(2), jpg(3)],
     });
     expect(result.success).toBe(true);
   });
@@ -65,16 +74,23 @@ describe("createScheduledPostSchema", () => {
     const result = createScheduledPostSchema.safeParse({
       ...validBase,
       mediaType: "CAROUSEL",
-      storagePaths: Array.from({ length: 11 }, (_, i) => `img-${i}.jpg`),
+      storagePaths: Array.from({ length: 11 }, (_, i) => jpg(i)),
     });
     expect(result.success).toBe(false);
+  });
+
+  it("rejects a storage path that isn't a flat content-addressed filename (path traversal, arbitrary names)", () => {
+    for (const bad of ["../../etc/passwd", "instagram/minha_conta/video.mp4", "Quiz 1.mp4", "video.png"]) {
+      const result = createScheduledPostSchema.safeParse({ ...validBase, storagePaths: [bad] });
+      expect(result.success, `expected "${bad}" to be rejected`).toBe(false);
+    }
   });
 
   it("rejects coverPath on a non-REELS post", () => {
     const result = createScheduledPostSchema.safeParse({
       ...validBase,
       mediaType: "IMAGE",
-      coverPath: "cover.jpg",
+      coverPath: jpg(9),
     });
     expect(result.success).toBe(false);
   });
@@ -82,7 +98,7 @@ describe("createScheduledPostSchema", () => {
   it("accepts coverPath on a REELS post", () => {
     const result = createScheduledPostSchema.safeParse({
       ...validBase,
-      coverPath: "cover.jpg",
+      coverPath: jpg(9),
     });
     expect(result.success).toBe(true);
   });
@@ -116,6 +132,41 @@ describe("createScheduledPostSchema", () => {
     const result = createScheduledPostSchema.parse(validBase);
     expect(result.shareToFeed).toBe(true);
   });
+
+  it("defaults force to false when omitted", () => {
+    const result = createScheduledPostSchema.parse(validBase);
+    expect(result.force).toBe(false);
+  });
+
+  it("rejects scheduledFor more than 5 minutes in the past", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      scheduledFor: new Date(Date.now() - 10 * 60_000).toISOString(),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts scheduledFor a couple minutes in the past (clock-skew slack)", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      scheduledFor: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("isScheduledForTooFarInThePast", () => {
+  it("is false for a time in the future", () => {
+    expect(isScheduledForTooFarInThePast("2026-09-27T12:10:00.000Z", NOW)).toBe(false);
+  });
+
+  it("is false within the 5-minute slack", () => {
+    expect(isScheduledForTooFarInThePast("2026-09-27T11:57:00.000Z", NOW)).toBe(false);
+  });
+
+  it("is true beyond the 5-minute slack", () => {
+    expect(isScheduledForTooFarInThePast("2026-09-27T11:50:00.000Z", NOW)).toBe(true);
+  });
 });
 
 describe("scheduledPostActionSchema", () => {
@@ -135,9 +186,17 @@ describe("scheduledPostActionSchema", () => {
   it("accepts reschedule with a valid scheduledFor", () => {
     const result = scheduledPostActionSchema.safeParse({
       action: "reschedule",
-      scheduledFor: "2026-10-02T12:00:00.000Z",
+      scheduledFor: FUTURE,
     });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects reschedule more than 5 minutes in the past", () => {
+    const result = scheduledPostActionSchema.safeParse({
+      action: "reschedule",
+      scheduledFor: new Date(Date.now() - 10 * 60_000).toISOString(),
+    });
+    expect(result.success).toBe(false);
   });
 
   it("rejects an unknown action", () => {

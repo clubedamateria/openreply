@@ -416,8 +416,9 @@ model PostbackDelivery {
 }
 
 /// A post queued to publish to Instagram at a future time, uploaded ahead of
-/// time to Supabase Storage so the Mac does not need to stay on. Published by
-/// the `publish-scheduled` cron in two phases (see ScheduledPostStatus).
+/// time to the VM's local disk (MEDIA_DIR) so the Mac does not need to stay
+/// on. Published by the `publish-scheduled` cron in two phases (see
+/// ScheduledPostStatus).
 model ScheduledPost {
   id                 String                @id @default(cuid())
   workspaceId        String
@@ -432,6 +433,15 @@ model ScheduledPost {
   storagePaths String[]
   /// REELS only: an optional still frame Instagram uses as the video's cover.
   coverUrl     String?
+  /// On-disk filename of coverUrl (MEDIA_DIR), so cleanup can delete it too —
+  /// mirrors storagePaths, kept separate because the cover isn't a "slide".
+  coverPath    String?
+
+  /// sha256 (hex) of each file in storagePaths, in the same order. Permanent —
+  /// never cleared by cleanup, even after the on-disk file is deleted — so the
+  /// same content can never be silently rescheduled twice for the same
+  /// account (see the dedup check in app/api/scheduled-posts/route.ts).
+  contentHash String[] @default([])
 
   /// Capped at 2,200 chars / 30 hashtags by Instagram; enforced at the API
   /// boundary (zod), not here.
@@ -465,6 +475,7 @@ model ScheduledPost {
 
   @@index([status, scheduledFor])
   @@index([workspaceId])
+  @@index([contentHash])
 }
 
 enum ScheduledPostMediaType {

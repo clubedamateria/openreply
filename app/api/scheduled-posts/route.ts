@@ -1,17 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getCurrentWorkspaceId } from "@/lib/auth";
 import { getWorkspaceInstagramAccount } from "@/lib/instagram-accounts";
-import { getSchedulerApiToken, getSupabaseStorageConfig } from "@/lib/env";
-import { getPublicStorageUrl } from "@/lib/storage/supabase";
+import { resolveScheduledPostActor } from "@/lib/scheduled-posts/auth";
 import { createScheduledPostSchema } from "@/lib/scheduled-posts/schema";
+import { getMediaPublicUrl, hashMediaFile, mediaFileExists } from "@/lib/storage/media";
 
+// Needs real fs access (mediaFileExists/hashMediaFile) — must never run on
+// the Edge runtime.
+export const runtime = "nodejs";
 // Read-your-writes for both the panel list and the CLI's dedup check.
 export const dynamic = "force-dynamic";
-
-type Actor =
-  | { source: "PAINEL"; workspaceId: string }
-  | { source: "LOTE" };
 
 /** Shape of one row in `GET /api/scheduled-posts` for a panel (session) caller. */
 export interface ScheduledPostListItem {
@@ -32,33 +30,16 @@ export interface ScheduledPostListItem {
   source: "PAINEL" | "LOTE";
 }
 
-/**
- * Resolves who is calling: a signed-in panel user (session cookie), or the
- * `agendar-lote` CLI (`Authorization: Bearer $SCHEDULER_API_TOKEN`). Returns
- * null when neither checks out, which callers turn into a 401.
- */
-async function resolveActor(request: NextRequest): Promise<Actor | null> {
-  const authHeader = request.headers.get("authorization");
-  const schedulerToken = getSchedulerApiToken();
-  if (schedulerToken && authHeader === `Bearer ${schedulerToken}`) {
-    return { source: "LOTE" };
-  }
-
-  const workspaceId = await getCurrentWorkspaceId();
-  if (workspaceId) return { source: "PAINEL", workspaceId };
-
-  return null;
-}
-
 export async function GET(request: NextRequest) {
-  const actor = await resolveActor(request);
+  const actor = await resolveScheduledPostActor(request);
   if (!actor) {
     return NextResponse.json({ success: false, error: "Não autorizado" }, { status: 401 });
   }
 
   if (actor.source === "LOTE") {
-    // The CLI only needs storagePaths to skip files it already scheduled —
-    // never expose captions/tokens/other workspaces here.
+    // The CLI uses this to pre-check dedup (bloqueador 3, permanent) and to
+    // skip files it already scheduled — never expose captions/tokens/other
+    // workspaces here, only what the dedup decision needs.
     const username = request.nextUrl.searchParams.get("username");
     if (!username) {
       return NextResponse.json(
@@ -77,7 +58,7 @@ export async function GET(request: NextRequest) {
 
     const posts = await prisma.scheduledPost.findMany({
       where: { instagramAccountId: account.id, status: { not: "CANCELED" } },
-      select: { id: true, storagePaths: true, status: true },
+      select: { id: true, storagePaths: true, status: true, contentHash: true },
     });
     return NextResponse.json({ success: true, data: posts });
   }
@@ -95,21 +76,22 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ success: true, data: posts });
 }
 
+/**
+ * True when `candidate` (the post being created) has the exact same set of
+ * file hashes as `existing` (a previously scheduled post on the same
+ * account) — order-independent, since re-uploading the same files in a
+ * different order is still the same content.
+ */
+function sameHashSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const setB = new Set(b);
+  return a.every((h) => setB.has(h));
+}
+
 export async function POST(request: NextRequest) {
-  const actor = await resolveActor(request);
+  const actor = await resolveScheduledPostActor(request);
   if (!actor) {
     return NextResponse.json({ success: false, error: "Não autorizado" }, { status: 401 });
-  }
-
-  const storageConfig = getSupabaseStorageConfig();
-  if (!storageConfig) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Armazenamento não configurado (defina SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY)",
-      },
-      { status: 503 }
-    );
   }
 
   const body = await request.json().catch(() => null);
@@ -145,14 +127,60 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // storagePaths only ever names files already streamed to MEDIA_DIR by
+  // POST /api/scheduled-posts/upload — never trust the client's word that
+  // they exist.
+  const allPaths = input.coverPath ? [...input.storagePaths, input.coverPath] : input.storagePaths;
+  for (const filename of allPaths) {
+    if (!(await mediaFileExists(filename))) {
+      return NextResponse.json(
+        { success: false, error: `Arquivo não encontrado: ${filename}. Faça upload de novo.` },
+        { status: 400 }
+      );
+    }
+  }
+
+  // Permanent dedup (bloqueador 3): the hash is computed from the bytes on
+  // disk, never trusted from the client, and never cleared once set — even
+  // after cleanup deletes the file itself (see
+  // lib/scheduled-posts/engine.ts's cleanupFilesFor).
+  const contentHash = await Promise.all(input.storagePaths.map((filename) => hashMediaFile(filename)));
+
+  if (!input.force) {
+    // `hasSome` uses the GIN index as a coarse pre-filter; the exact-set
+    // comparison happens in application code since two posts can share one
+    // file (e.g. reused cover) without being the same set.
+    const candidates = await prisma.scheduledPost.findMany({
+      where: {
+        instagramAccountId: account.id,
+        status: { not: "CANCELED" },
+        contentHash: { hasSome: contentHash },
+      },
+      select: { id: true, contentHash: true },
+    });
+    const duplicate = candidates.find((c) => sameHashSet(c.contentHash, contentHash));
+    if (duplicate) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Este conteúdo já está agendado (post ${duplicate.id}). Envie force: true para agendar mesmo assim.`,
+          duplicateId: duplicate.id,
+        },
+        { status: 409 }
+      );
+    }
+  }
+
   const scheduledPost = await prisma.scheduledPost.create({
     data: {
       workspaceId: account.workspaceId,
       instagramAccountId: account.id,
       mediaType: input.mediaType,
       storagePaths: input.storagePaths,
-      mediaUrls: input.storagePaths.map((path) => getPublicStorageUrl(path, storageConfig)),
-      coverUrl: input.coverPath ? getPublicStorageUrl(input.coverPath, storageConfig) : null,
+      mediaUrls: input.storagePaths.map((filename) => getMediaPublicUrl(filename)),
+      coverPath: input.coverPath ?? null,
+      coverUrl: input.coverPath ? getMediaPublicUrl(input.coverPath) : null,
+      contentHash,
       caption: input.caption,
       shareToFeed: input.shareToFeed,
       scheduledFor: new Date(input.scheduledFor),

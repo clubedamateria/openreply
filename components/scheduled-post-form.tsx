@@ -4,9 +4,9 @@
  * New Scheduled Post form
  *
  * Account, type, file(s), caption, local date/time, "show on feed". Files
- * upload straight from the browser to Supabase Storage via a signed URL
- * (`/api/scheduled-posts/upload-url`) — the service role key never reaches
- * the client — then the row is created with `POST /api/scheduled-posts`.
+ * stream straight from the browser to the VM's disk (`POST
+ * /api/scheduled-posts/upload`, session-authenticated) — then the row is
+ * created with `POST /api/scheduled-posts`.
  */
 
 import { useEffect, useState } from "react";
@@ -22,47 +22,34 @@ import {
   UploadCloud,
 } from "lucide-react";
 import type { AccountOption } from "@/components/account-select";
+import { saoPauloToUtcIso } from "@/lib/scheduled-posts/timezone";
 
 type MediaType = "REELS" | "IMAGE" | "CAROUSEL";
 
+// Only video/mp4 and image/jpeg are ever accepted server-side — the
+// Content Publishing API does not take PNG for images at all, so it is left
+// out of `accept` (and rejected again, with a clear message, in validate()).
 const MEDIA_TYPE_OPTIONS: { value: MediaType; label: string; icon: typeof Clapperboard; accept: string; hint: string }[] = [
   { value: "REELS", label: "Reels", icon: Clapperboard, accept: "video/mp4", hint: "1 vídeo (.mp4)" },
-  { value: "IMAGE", label: "Imagem", icon: ImagePlus, accept: "image/jpeg,image/png", hint: "1 imagem (.jpg/.png)" },
-  { value: "CAROUSEL", label: "Carrossel", icon: Layers, accept: "image/jpeg,image/png,video/mp4", hint: "2 a 10 arquivos" },
+  { value: "IMAGE", label: "Imagem", icon: ImagePlus, accept: "image/jpeg", hint: "1 imagem (.jpg) — o Instagram não aceita PNG" },
+  { value: "CAROUSEL", label: "Carrossel", icon: Layers, accept: "image/jpeg,video/mp4", hint: "2 a 10 arquivos (.jpg/.mp4)" },
 ];
 
-// Brazil dropped DST in 2019, so America/Sao_Paulo is a fixed UTC-3 offset —
-// safe to hardcode instead of depending on the operator's browser timezone.
-const SAO_PAULO_UTC_OFFSET = "-03:00";
-
-function localToUtcIso(date: string, time: string): string {
-  return new Date(`${date}T${time}:00${SAO_PAULO_UTC_OFFSET}`).toISOString();
+function isPng(file: File): boolean {
+  return file.type === "image/png" || /\.png$/i.test(file.name);
 }
 
-async function uploadFile(
-  instagramAccountId: string,
-  file: File
-): Promise<{ path: string; publicUrl: string }> {
-  const signRes = await fetch("/api/scheduled-posts/upload-url", {
+async function uploadFile(file: File): Promise<{ path: string; url: string }> {
+  const res = await fetch("/api/scheduled-posts/upload", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ instagramAccountId, filename: file.name }),
-  });
-  const signJson = await signRes.json();
-  if (!signRes.ok || !signJson.success) {
-    throw new Error(signJson.error ?? "Falha ao preparar o upload");
-  }
-
-  const putRes = await fetch(signJson.data.uploadUrl, {
-    method: "PUT",
     headers: { "Content-Type": file.type || "application/octet-stream" },
     body: file,
   });
-  if (!putRes.ok) {
-    throw new Error(`Falha ao enviar ${file.name} para o Supabase`);
+  const json = await res.json().catch(() => null);
+  if (!res.ok || !json?.success) {
+    throw new Error(json?.error ?? `Falha ao enviar ${file.name}`);
   }
-
-  return { path: signJson.data.path, publicUrl: signJson.data.publicUrl };
+  return { path: json.data.path, url: json.data.url };
 }
 
 export default function ScheduledPostForm() {
@@ -107,10 +94,18 @@ export default function ScheduledPostForm() {
     } else if (files.length !== 1) {
       return "Escolha 1 arquivo";
     }
+    const pngFile = [...files, ...(coverFile ? [coverFile] : [])].find(isPng);
+    if (pngFile) {
+      return `"${pngFile.name}" é PNG — o Instagram (Content Publishing API) só aceita JPEG para imagens`;
+    }
     if (!date || !time) return "Escolha a data e a hora";
     if (!caption.trim()) return "Escreva a legenda";
     if (caption.length > 2200) return "Legenda acima de 2.200 caracteres";
     if (hashtagCount > 30) return "No máximo 30 hashtags";
+    const scheduledFor = saoPauloToUtcIso(date, time);
+    if (new Date(scheduledFor).getTime() < Date.now() - 5 * 60_000) {
+      return "Escolha uma data/hora que não esteja mais de 5 minutos no passado";
+    }
     return null;
   }
 
@@ -129,14 +124,14 @@ export default function ScheduledPostForm() {
       const storagePaths: string[] = [];
       for (let i = 0; i < files.length; i++) {
         setProgress(`Enviando arquivo ${i + 1} de ${files.length}...`);
-        const uploaded = await uploadFile(instagramAccountId, files[i]);
+        const uploaded = await uploadFile(files[i]);
         storagePaths.push(uploaded.path);
       }
 
       let coverPath: string | undefined;
       if (coverFile) {
         setProgress("Enviando capa...");
-        const uploaded = await uploadFile(instagramAccountId, coverFile);
+        const uploaded = await uploadFile(coverFile);
         coverPath = uploaded.path;
       }
 
@@ -151,7 +146,7 @@ export default function ScheduledPostForm() {
           coverPath,
           caption,
           shareToFeed,
-          scheduledFor: localToUtcIso(date, time),
+          scheduledFor: saoPauloToUtcIso(date, time),
         }),
       });
       const json = await res.json();
@@ -270,7 +265,7 @@ export default function ScheduledPostForm() {
             <input
               id="cover"
               type="file"
-              accept="image/jpeg,image/png"
+              accept="image/jpeg"
               onChange={(e) => setCoverFile(e.target.files?.[0] ?? null)}
               className="sr-only"
             />

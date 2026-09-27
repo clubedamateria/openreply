@@ -16,6 +16,8 @@ CREATE TABLE "ScheduledPost" (
     "mediaUrls" TEXT[],
     "storagePaths" TEXT[],
     "coverUrl" TEXT,
+    "coverPath" TEXT,
+    "contentHash" TEXT[] NOT NULL DEFAULT '{}',
     "caption" TEXT NOT NULL,
     "shareToFeed" BOOLEAN NOT NULL DEFAULT true,
     "scheduledFor" TIMESTAMP(3) NOT NULL,
@@ -42,6 +44,12 @@ CREATE INDEX "ScheduledPost_status_scheduledFor_idx" ON "ScheduledPost"("status"
 
 -- CreateIndex
 CREATE INDEX "ScheduledPost_workspaceId_idx" ON "ScheduledPost"("workspaceId");
+
+-- CreateIndex
+-- GIN so `contentHash && ARRAY[...]` (Prisma's `hasSome`) can use an index as
+-- a coarse pre-filter for the permanent-dedup check; exact-match confirmation
+-- still happens in application code (see app/api/scheduled-posts/route.ts).
+CREATE INDEX "ScheduledPost_contentHash_idx" ON "ScheduledPost" USING GIN ("contentHash");
 
 -- AddForeignKey
 ALTER TABLE "ScheduledPost" ADD CONSTRAINT "ScheduledPost_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "Workspace"("id") ON DELETE CASCADE ON UPDATE CASCADE;

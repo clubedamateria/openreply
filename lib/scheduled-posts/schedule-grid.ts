@@ -1,14 +1,16 @@
 /**
  * Pure slot-assignment for `agendar-lote --inicio --horarios --por-dia`: given
  * N items, spread them across days starting at `startDate`, `porDia` per day,
- * at the given clock times — all in America/Sao_Paulo (fixed UTC-3; Brazil
- * dropped DST in 2019).
+ * at the given clock times — all in America/Sao_Paulo, converted with
+ * lib/scheduled-posts/timezone.ts (not a hardcoded "-03:00": Brazil has no
+ * DST today, but did until 2019, and a fixed offset would silently
+ * mis-schedule anything computed relative to a date outside "today's" rule).
  *
- * Kept dependency-free (no fs/network) so the grid math is unit-testable on
- * its own, independent of uploads or the API call.
+ * Kept dependency-free otherwise (no fs/network) so the grid math is
+ * unit-testable on its own, independent of uploads or the API call.
  */
 
-const SAO_PAULO_UTC_OFFSET = "-03:00";
+import { saoPauloToUtcIso } from "@/lib/scheduled-posts/timezone";
 
 export interface ScheduleGridInput {
   itemCount: number;
@@ -61,9 +63,7 @@ export function buildScheduleGrid({
     const time = horarios[slotOfDay];
     slots.push({
       index: i,
-      scheduledForUtcIso: new Date(
-        `${date}T${time}:00${SAO_PAULO_UTC_OFFSET}`
-      ).toISOString(),
+      scheduledForUtcIso: saoPauloToUtcIso(date, time),
     });
   }
   return slots;

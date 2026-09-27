@@ -4,8 +4,8 @@
  * Agendados (Scheduled Posts)
  *
  * Posts queued for Instagram, grouped by day (America/Sao_Paulo). Uploaded
- * ahead of time to Supabase Storage, published by the `publish-scheduled`
- * cron so the Mac does not need to stay on. See
+ * ahead of time to the VM's local disk (MEDIA_DIR), published by the
+ * `publish-scheduled` cron so the Mac does not need to stay on. See
  * docs/2026-09-27-agendados-comentarios.md.
  */
 
@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import AccountSelect from "@/components/account-select";
 import ScheduledPostStatusBadge from "@/components/scheduled-post-status-badge";
+import { saoPauloToUtcIso } from "@/lib/scheduled-posts/timezone";
 import type { ScheduledPostListItem } from "@/app/api/scheduled-posts/route";
 
 const MEDIA_TYPE_ICON = { REELS: Clapperboard, IMAGE: ImagePlus, CAROUSEL: Layers };
@@ -35,7 +36,10 @@ function dayKey(iso: string): string {
 }
 
 function formatDayLabel(key: string): string {
-  return new Date(`${key}T12:00:00-03:00`).toLocaleDateString("pt-BR", {
+  // Noon is just an anchor safely inside the same calendar day regardless of
+  // the exact offset — but computed with the real offset (not a hardcoded
+  // "-03:00") like every other date in this file, for consistency.
+  return new Date(saoPauloToUtcIso(key, "12:00")).toLocaleDateString("pt-BR", {
     timeZone: "America/Sao_Paulo",
     weekday: "long",
     day: "2-digit",
@@ -204,7 +208,7 @@ export default function AgendadosPage() {
                           className="h-16 w-16 rounded-[10px] object-cover"
                         />
                       ) : (
-                        // eslint-disable-next-line @next/next/no-img-element -- remote Supabase thumbnail, not worth next/image config for a fixed 64px tile
+                        // eslint-disable-next-line @next/next/no-img-element -- served from MEDIA_DIR, not worth next/image config for a fixed 64px tile
                         <img
                           src={post.mediaUrls[0]}
                           alt=""
@@ -275,12 +279,13 @@ export default function AgendadosPage() {
                             <button
                               type="button"
                               disabled={isBusy || !rescheduleValue}
-                              onClick={() =>
+                              onClick={() => {
+                                const [datePart, timePart] = rescheduleValue.split("T");
                                 runAction(post.id, {
                                   action: "reschedule",
-                                  scheduledFor: new Date(`${rescheduleValue}:00-03:00`).toISOString(),
-                                })
-                              }
+                                  scheduledFor: saoPauloToUtcIso(datePart, timePart),
+                                });
+                              }}
                               className="btn btn-primary btn-sm"
                             >
                               Confirmar
