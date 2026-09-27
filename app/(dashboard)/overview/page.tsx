@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import AccountSelect from "@/components/account-select";
 import StatCard from "@/components/stat-card";
 import FollowerChart from "@/components/follower-chart";
+import TopPostsTable from "@/components/top-posts-table";
 import type { OverviewResponse } from "@/app/api/instagram/overview/route";
 
 function formatNumber(n: number | null): string {
@@ -186,6 +187,10 @@ export default function OverviewPage() {
 
       {/* Follower trend — account-level, independent of the post range */}
       <FollowerChart data={followerHistory} followers={followers} />
+
+      {/* Ranking sortable by reach / saved / shares / comments — same posts,
+          no extra API calls. */}
+      <TopPostsTable posts={posts} />
 
       {/* Per-post table */}
       <div className="panel rounded p-4 sm:p-6">
