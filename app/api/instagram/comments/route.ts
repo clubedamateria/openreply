@@ -10,6 +10,12 @@ import {
 
 // How many recent comments to show in the feed.
 const RECENT_COMMENTS_LIMIT = 30;
+// Word-stats/keyword-performance are aggregate views, not a full export —
+// capping the row count read for them is what keeps a viral account's
+// comment volume from ballooning this request's memory. totalComments still
+// comes from a separate `count()`, so the number shown is always exact even
+// past this cap.
+const AGGREGATION_ROWS_LIMIT = 20_000;
 const VALID_DAYS = [7, 30, 90] as const;
 type Days = (typeof VALID_DAYS)[number];
 
@@ -110,28 +116,41 @@ export async function GET(request: NextRequest) {
     selectedAccountId !== "all" ? { id: selectedAccountId } : {};
 
   try {
-    const comments = await prisma.instagramComment.findMany({
-      where: {
-        commentedAt: { gte: since },
-        instagramAccount: { workspaceId, ...accountScope },
-      },
-      orderBy: { commentedAt: "desc" },
-      include: {
-        instagramAccount: {
-          select: {
-            id: true,
-            username: true,
-            instagramId: true,
-            accessToken: true,
-            provider: true,
-            workspaceId: true,
-            zernioAccountId: true,
-          },
-        },
-      },
-    });
+    const commentWhere = {
+      commentedAt: { gte: since },
+      instagramAccount: { workspaceId, ...accountScope },
+    };
 
-    const wordStats = analyzeCommentTexts(comments.map((c) => c.text));
+    // Three separate, narrow queries instead of one unbounded one embedding
+    // full account rows (including accessToken) per comment: totalComments
+    // is an exact count (never truncated by the aggregation cap below), the
+    // aggregation read only pulls `text` (all it needs) capped at
+    // AGGREGATION_ROWS_LIMIT, and the recent-comments feed is its own
+    // take:30 query with no credentials in it at all.
+    const [totalComments, aggregationRows, recentRows] = await Promise.all([
+      prisma.instagramComment.count({ where: commentWhere }),
+      prisma.instagramComment.findMany({
+        where: commentWhere,
+        select: { text: true },
+        take: AGGREGATION_ROWS_LIMIT,
+      }),
+      prisma.instagramComment.findMany({
+        where: commentWhere,
+        orderBy: { commentedAt: "desc" },
+        take: RECENT_COMMENTS_LIMIT,
+        select: {
+          id: true,
+          text: true,
+          username: true,
+          commentedAt: true,
+          mediaId: true,
+          instagramAccountId: true,
+          instagramAccount: { select: { username: true } },
+        },
+      }),
+    ]);
+
+    const wordStats = analyzeCommentTexts(aggregationRows.map((c) => c.text));
 
     const automations = await prisma.automation.findMany({
       where: {
@@ -157,6 +176,7 @@ export async function GET(request: NextRequest) {
             status: true,
             commentId: true,
           },
+          take: AGGREGATION_ROWS_LIMIT,
         })
       : [];
 
@@ -181,35 +201,47 @@ export async function GET(request: NextRequest) {
       clicksByAutomation,
     });
 
-    const recentSlice = comments.slice(0, RECENT_COMMENTS_LIMIT);
-    const distinctAccounts = new Map(
-      recentSlice.map((c) => [c.instagramAccount.id, c.instagramAccount])
-    );
+    // Credentials (accessToken included) are fetched in exactly one query,
+    // for exactly the handful of distinct accounts behind these 30 recent
+    // comments — never embedded in the per-comment rows above.
+    const distinctAccountIds = [...new Set(recentRows.map((c) => c.instagramAccountId))];
+    const credentialAccounts = distinctAccountIds.length
+      ? await prisma.instagramAccount.findMany({
+          where: { id: { in: distinctAccountIds } },
+          select: {
+            id: true,
+            provider: true,
+            workspaceId: true,
+            zernioAccountId: true,
+            instagramId: true,
+            accessToken: true,
+          },
+        })
+      : [];
+
     const permalinkMaps = new Map(
       await Promise.all(
-        [...distinctAccounts.values()].map(
-          async (account) =>
-            [account.id, await getPermalinkMap(account)] as const
+        credentialAccounts.map(
+          async (account) => [account.id, await getPermalinkMap(account)] as const
         )
       )
     );
 
-    const recentComments = recentSlice.map((c) => ({
+    const recentComments = recentRows.map((c) => ({
       id: c.id,
       text: c.text,
       username: c.username,
       commentedAt: c.commentedAt.toISOString(),
       mediaId: c.mediaId,
       accountUsername: c.instagramAccount.username,
-      permalink:
-        permalinkMaps.get(c.instagramAccount.id)?.get(c.mediaId) ?? null,
+      permalink: permalinkMaps.get(c.instagramAccountId)?.get(c.mediaId) ?? null,
     }));
 
     const data: CommentsResponse = {
       accounts,
       selectedAccountId,
       days,
-      totalComments: comments.length,
+      totalComments,
       wordStats,
       campaigns,
       recentComments,

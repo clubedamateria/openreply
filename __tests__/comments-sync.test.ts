@@ -83,13 +83,49 @@ describe("recordInstagramComment", () => {
         commentedAt,
         parentId: null,
       },
+      // commentedAt is NOT in the update branch: it must never be bumped by
+      // a re-delivery or a later backfill pass seeing the same comment
+      // again — only `create` sets it, once. Likewise `parentId` is only
+      // ever set when the caller actually knows it (never nulled out).
       update: {
         text: "quero o link",
         username: "fan1",
-        commentedAt,
-        parentId: null,
       },
     });
+  });
+
+  it("fills in parentId on update when the caller now knows it, without nulling out anything else", async () => {
+    mockUpsert.mockResolvedValue({});
+
+    await recordInstagramComment("account_1", {
+      commentId: "comment_2",
+      mediaId: "media_1",
+      text: "reply",
+      username: "fan2",
+      commentedAt: new Date("2026-09-27T12:00:00Z"),
+      parentId: "comment_1",
+    });
+
+    expect(mockUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: { text: "reply", username: "fan2", parentId: "comment_1" },
+      })
+    );
+  });
+
+  it("never overwrites commentedAt on a repeated delivery", async () => {
+    mockUpsert.mockResolvedValue({});
+
+    await recordInstagramComment("account_1", {
+      commentId: "comment_1",
+      mediaId: "media_1",
+      text: "quero o link (editado)",
+      username: "fan1",
+      commentedAt: new Date("2026-09-28T00:00:00Z"),
+    });
+
+    const call = mockUpsert.mock.calls[0][0];
+    expect(call.update).not.toHaveProperty("commentedAt");
   });
 
   it("is idempotent: calling it twice for the same commentId still upserts (never creates a duplicate)", async () => {

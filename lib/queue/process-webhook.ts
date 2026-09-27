@@ -51,6 +51,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
         text: event.commentText,
         username: event.commenterName ?? null,
         commentedAt: new Date(),
+        parentId: event.parentId ?? null,
       });
 
       await queue.add(

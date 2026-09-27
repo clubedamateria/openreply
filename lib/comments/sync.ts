@@ -69,8 +69,18 @@ export async function recordInstagramComment(
       update: {
         text: comment.text,
         username: comment.username ?? null,
-        commentedAt: comment.commentedAt,
-        parentId: comment.parentId ?? null,
+        // commentedAt is deliberately NOT updated here: it is the comment's
+        // original timestamp, set once on first sight (webhook or backfill,
+        // whichever sees it first) — re-delivery must never bump it to "now"
+        // or to a later backfill pass's read of it.
+        //
+        // parentId: only ever set, never cleared. The daily backfill
+        // (app/api/cron/sync-comments/route.ts) doesn't currently read
+        // parent_id at all, so if it re-upserts a reply the webhook already
+        // recorded with a parentId, `undefined` here (Prisma skips
+        // `undefined` fields on update) leaves the existing value alone
+        // instead of nulling it out.
+        ...(comment.parentId ? { parentId: comment.parentId } : {}),
       },
     });
   } catch (error) {

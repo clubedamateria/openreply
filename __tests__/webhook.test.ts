@@ -99,6 +99,59 @@ describe("parseCommentEvents", () => {
     });
   });
 
+  it("extracts parentId when the comment is a reply to another comment", () => {
+    const payload = {
+      object: "instagram",
+      entry: [
+        {
+          id: "page_123",
+          time: 1234567890,
+          changes: [
+            {
+              field: "comments",
+              value: {
+                id: "comment_456",
+                text: "respondendo",
+                from: { id: "user_789", username: "testuser" },
+                media: { id: "media_101" },
+                parent_id: "comment_original",
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const events = parseCommentEvents(payload);
+    expect(events[0].parentId).toBe("comment_original");
+  });
+
+  it("leaves parentId unset for a top-level comment", () => {
+    const payload = {
+      object: "instagram",
+      entry: [
+        {
+          id: "page_123",
+          time: 1234567890,
+          changes: [
+            {
+              field: "comments",
+              value: {
+                id: "comment_456",
+                text: "comentário normal",
+                from: { id: "user_789", username: "testuser" },
+                media: { id: "media_101" },
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const events = parseCommentEvents(payload);
+    expect(events[0].parentId).toBeUndefined();
+  });
+
   it("keeps the organic post id of a comment left on an ad", () => {
     const payload = {
       object: "instagram",

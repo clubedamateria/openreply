@@ -45,6 +45,8 @@ export interface WebhookCommentEvent {
    * matching has to consider it as well as mediaId.
    */
   originalMediaId?: string;
+  /** Set only when this comment is itself a reply to another comment. */
+  parentId?: string;
 }
 
 interface WebhookEntry {
@@ -69,6 +71,8 @@ interface WebhookEntry {
         media_product_type?: string;
       };
       media_id?: string;
+      // Present when this comment is a reply to another comment.
+      parent_id?: string;
     };
   }>;
   messaging?: Array<{
@@ -134,6 +138,7 @@ export function parseCommentEvents(payload: WebhookPayload): WebhookCommentEvent
           ? undefined
           : value?.media?.original_media_id;
       const commenterId = value?.from?.id;
+      const parentId = value?.parent_id;
 
       if (!entry.id || !commentId || !mediaId || !commenterId) {
         continue;
@@ -154,6 +159,7 @@ export function parseCommentEvents(payload: WebhookPayload): WebhookCommentEvent
         commenterName: value.from?.username,
         mediaId,
         originalMediaId,
+        parentId,
       });
     }
   }
