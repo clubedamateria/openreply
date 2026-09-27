@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { getCurrentWorkspaceId } from "@/lib/auth";
 import { getWorkspaceInstagramAccount } from "@/lib/instagram-accounts";
-import { getSchedulerApiToken } from "@/lib/env";
+import { getSchedulerApiToken, getSupabaseStorageConfig } from "@/lib/env";
 import { getPublicStorageUrl } from "@/lib/storage/supabase";
 import { createScheduledPostSchema } from "@/lib/scheduled-posts/schema";
 
@@ -101,6 +101,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Não autorizado" }, { status: 401 });
   }
 
+  const storageConfig = getSupabaseStorageConfig();
+  if (!storageConfig) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Armazenamento não configurado (defina SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY)",
+      },
+      { status: 503 }
+    );
+  }
+
   const body = await request.json().catch(() => null);
   const parsed = createScheduledPostSchema.safeParse(body);
   if (!parsed.success) {
@@ -140,8 +151,8 @@ export async function POST(request: NextRequest) {
       instagramAccountId: account.id,
       mediaType: input.mediaType,
       storagePaths: input.storagePaths,
-      mediaUrls: input.storagePaths.map((path) => getPublicStorageUrl(path)),
-      coverUrl: input.coverPath ? getPublicStorageUrl(input.coverPath) : null,
+      mediaUrls: input.storagePaths.map((path) => getPublicStorageUrl(path, storageConfig)),
+      coverUrl: input.coverPath ? getPublicStorageUrl(input.coverPath, storageConfig) : null,
       caption: input.caption,
       shareToFeed: input.shareToFeed,
       scheduledFor: new Date(input.scheduledFor),
