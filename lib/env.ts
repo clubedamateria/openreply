@@ -72,6 +72,50 @@ export function isEmailAllowedToSignIn(
   return allowed.includes(email.toLowerCase());
 }
 
+/**
+ * Optional Supabase Storage credentials for scheduled posts (video/image
+ * uploads and the signed-upload-URL route). Left unset, `/agendados` still
+ * renders but uploads and the cron's cleanup step are no-ops — a self-hoster
+ * who does not use scheduling is unaffected.
+ */
+export function getSupabaseStorageConfig(): {
+  url: string;
+  serviceRoleKey: string;
+} | null {
+  const url = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceRoleKey) return null;
+  return { url, serviceRoleKey };
+}
+
+/**
+ * Bearer token the `agendar-lote` CLI (and any other external caller) presents
+ * to `POST /api/scheduled-posts`. Unset means the lote route is closed —
+ * requests are rejected rather than silently accepted with no auth.
+ */
+export function getSchedulerApiToken(): string | null {
+  return process.env.SCHEDULER_API_TOKEN || null;
+}
+
+/**
+ * Resend credentials for the "publication failed" alert email, kept separate
+ * from the magic-link RESEND_API_KEY/EMAIL_FROM pair above only in the
+ * `from`/`to` address: RESEND_FROM lets the alert use a different sender than
+ * login emails, and ALERT_EMAIL_TO is who gets paged. Any missing piece just
+ * logs instead of sending — a failed publish must never itself throw.
+ */
+export function getResendAlertConfig(): {
+  apiKey: string;
+  from: string;
+  to: string;
+} | null {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM;
+  const to = process.env.ALERT_EMAIL_TO;
+  if (!apiKey || !from || !to) return null;
+  return { apiKey, from, to };
+}
+
 export const serverEnvSchema = z.object({
   NEXTAUTH_URL: z.string().url(),
   NEXTAUTH_SECRET: z.string().min(16),
