@@ -13,7 +13,13 @@ export class MetaApiError extends Error {
     public code: number,
     public subcode: number | undefined,
     public fbTraceId: string | undefined,
-    message: string
+    message: string,
+    // The real HTTP status of the response, as opposed to `code` (Meta's own
+    // numeric error code, e.g. 190/368/100 — a different numbering entirely).
+    // The scheduled-posts engine uses this, not `code`, to tell an explicit
+    // 4xx rejection apart from a 5xx/transport failure (see
+    // lib/scheduled-posts/engine.ts's isExplicit4xxMetaError).
+    public httpStatus: number = 0
   ) {
     super(message);
     this.name = "MetaApiError";
@@ -21,22 +27,22 @@ export class MetaApiError extends Error {
 }
 
 export class TokenExpiredError extends MetaApiError {
-  constructor(message: string, fbTraceId?: string) {
-    super(190, undefined, fbTraceId, message);
+  constructor(message: string, fbTraceId?: string, httpStatus = 401) {
+    super(190, undefined, fbTraceId, message, httpStatus);
     this.name = "TokenExpiredError";
   }
 }
 
 export class RateLimitError extends MetaApiError {
-  constructor(message: string, fbTraceId?: string) {
-    super(368, undefined, fbTraceId, message);
+  constructor(message: string, fbTraceId?: string, httpStatus = 429) {
+    super(368, undefined, fbTraceId, message, httpStatus);
     this.name = "RateLimitError";
   }
 }
 
 export class PermissionError extends MetaApiError {
-  constructor(message: string, fbTraceId?: string) {
-    super(100, undefined, fbTraceId, message);
+  constructor(message: string, fbTraceId?: string, httpStatus = 403) {
+    super(100, undefined, fbTraceId, message, httpStatus);
     this.name = "PermissionError";
   }
 }
@@ -127,17 +133,17 @@ async function handleResponse<T>(response: Response): Promise<T> {
 
     switch (code) {
       case 190:
-        throw new TokenExpiredError(message, traceId);
+        throw new TokenExpiredError(message, traceId, response.status);
       case 368:
       case 4:
       case 17:
-        throw new RateLimitError(message, traceId);
+        throw new RateLimitError(message, traceId, response.status);
       case 10:
       case 100:
       case 200:
-        throw new PermissionError(message, traceId);
+        throw new PermissionError(message, traceId, response.status);
       default:
-        throw new MetaApiError(code, subcode, traceId, message);
+        throw new MetaApiError(code, subcode, traceId, message, response.status);
     }
   }
 
@@ -786,6 +792,11 @@ export interface MediaContainer {
 
 /** Create a REELS container. `coverUrl` is optional — Instagram picks a frame
  * itself when omitted. */
+// Every Meta call in the publish path gets a hard timeout: with no cap, a
+// hung TCP connection to Meta could pin a cron tick (and its DB row lock)
+// open indefinitely.
+const PUBLISH_CALL_TIMEOUT_MS = 30_000;
+
 export async function createReelsContainer(
   accessToken: string,
   igUserId: string,
@@ -804,6 +815,7 @@ export async function createReelsContainer(
       share_to_feed: params.shareToFeed,
       ...(params.coverUrl ? { cover_url: params.coverUrl } : {}),
     }),
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
   });
 
   return handleResponse(response);
@@ -825,13 +837,16 @@ export async function createImageContainer(
       image_url: params.imageUrl,
       caption: params.caption,
     }),
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
   });
 
   return handleResponse(response);
 }
 
 /** Create one carousel slide. Instagram infers image vs video from which URL
- * field is present, so the caller decides `isVideo` from the file extension. */
+ * field is present, so the caller decides `isVideo` from the file extension —
+ * but a video child also needs an explicit `media_type: "VIDEO"`, otherwise
+ * Meta rejects it as an invalid carousel item. */
 export async function createCarouselChildContainer(
   accessToken: string,
   igUserId: string,
@@ -846,9 +861,10 @@ export async function createCarouselChildContainer(
     body: JSON.stringify({
       is_carousel_item: true,
       ...(params.isVideo
-        ? { video_url: params.mediaUrl }
+        ? { media_type: "VIDEO", video_url: params.mediaUrl }
         : { image_url: params.mediaUrl }),
     }),
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
   });
 
   return handleResponse(response);
@@ -871,6 +887,7 @@ export async function createCarouselContainer(
       children: params.childContainerIds.join(","),
       caption: params.caption,
     }),
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
   });
 
   return handleResponse(response);
@@ -897,12 +914,17 @@ export async function getContainerStatus(
   const url = new URL(`${instagramGraphBase()}/${containerId}`);
   url.searchParams.set("fields", "status_code,status");
   url.searchParams.set("access_token", accessToken);
-  const response = await fetch(url.toString());
+  const response = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
+  });
   return handleResponse(response);
 }
 
 /** Publish a FINISHED container. `mediaId` on the caller's row must stay
- * unset until this resolves — it is what prevents a double publish. */
+ * unset until this resolves — it is what prevents a double publish. Callers
+ * must treat a thrown error here as *ambiguous* (Meta may or may not have
+ * actually published): never assume failure and recreate the container
+ * without first re-checking `getContainerStatus`/`listRecentMedia`. */
 export async function publishMediaContainer(
   accessToken: string,
   igUserId: string,
@@ -911,7 +933,10 @@ export async function publishMediaContainer(
   const url = new URL(`${instagramGraphBase()}/${igUserId}/media_publish`);
   url.searchParams.set("creation_id", creationId);
   url.searchParams.set("access_token", accessToken);
-  const response = await fetch(url.toString(), { method: "POST" });
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
+  });
   return handleResponse(response);
 }
 
@@ -923,8 +948,40 @@ export async function getMediaPermalink(
   const url = new URL(`${instagramGraphBase()}/${mediaId}`);
   url.searchParams.set("fields", "permalink");
   url.searchParams.set("access_token", accessToken);
-  const response = await fetch(url.toString());
+  const response = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
+  });
   return handleResponse(response);
+}
+
+/**
+ * List the account's most recent published media (newest first), used only
+ * to reconcile a container whose `media_publish` response was lost: if the
+ * container's own status comes back PUBLISHED, this is how the engine finds
+ * the resulting media id again, by matching caption + timestamp instead of
+ * relying on a response that may never have arrived.
+ */
+export interface RecentMediaItem {
+  id: string;
+  permalink?: string;
+  timestamp: string;
+  caption?: string;
+}
+
+export async function listRecentMedia(
+  accessToken: string,
+  igUserId: string,
+  limit = 10
+): Promise<RecentMediaItem[]> {
+  const url = new URL(`${instagramGraphBase()}/${igUserId}/media`);
+  url.searchParams.set("fields", "id,permalink,timestamp,caption");
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("access_token", accessToken);
+  const response = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
+  });
+  const data = await handleResponse<{ data: RecentMediaItem[] }>(response);
+  return data.data ?? [];
 }
 
 export interface PublishingLimit {
@@ -942,7 +999,9 @@ export async function getContentPublishingLimit(
   const url = new URL(`${instagramGraphBase()}/${igUserId}/content_publishing_limit`);
   url.searchParams.set("fields", "config,quota_usage");
   url.searchParams.set("access_token", accessToken);
-  const response = await fetch(url.toString());
+  const response = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(PUBLISH_CALL_TIMEOUT_MS),
+  });
   const data = await handleResponse<{ data: PublishingLimit[] }>(response);
   return data.data?.[0] ?? null;
 }

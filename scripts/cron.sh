@@ -25,7 +25,11 @@ call() {
   route="$1"
   stamp=$(date -u '+%Y-%m-%d %H:%M:%S')
 
-  if body=$(wget -q -O- --timeout=180 \
+  # --tries=1: a single retry loop of ours (the `while true` below, once a
+  # minute/day) is already the retry strategy — wget's own default retries
+  # would otherwise stack additional attempts on top of that and can leave a
+  # call still running well past when the next tick was due.
+  if body=$(wget -q -O- --timeout=180 --tries=1 \
       --header="Authorization: Bearer $SECRET" \
       "$BASE_URL/api/cron/$route" 2>&1); then
     echo "[cron] $stamp $route ok $body"
@@ -73,7 +77,10 @@ while true; do
     last_daily="$today"
     call refresh-tokens
     call snapshot-followers
-    call sync-comments
+    # Backgrounded: sync-comments walks 30 posts x per-media pagination per
+    # account and can run long. publish-scheduled fires every minute and
+    # must never wait behind it.
+    call sync-comments &
   fi
 
   # Half a minute: short enough never to skip a slot, long enough to stay idle.
