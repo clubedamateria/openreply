@@ -1,0 +1,126 @@
+/**
+ * Comment ingestion (recordInstagramComment / isOwnAccountComment) — Unit Tests
+ */
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const { mockUpsert } = vi.hoisted(() => ({
+  mockUpsert: vi.fn(),
+}));
+
+vi.mock("@/lib/db/client", () => ({
+  prisma: {
+    instagramComment: {
+      upsert: mockUpsert,
+    },
+  },
+}));
+
+import { isOwnAccountComment, recordInstagramComment } from "../lib/comments/sync";
+
+describe("isOwnAccountComment", () => {
+  const account = { instagramId: "ig_123", username: "ourbrand" };
+
+  it("matches by author id", () => {
+    expect(
+      isOwnAccountComment({ authorId: "ig_123", authorUsername: null, account })
+    ).toBe(true);
+  });
+
+  it("matches by username, case-insensitively", () => {
+    expect(
+      isOwnAccountComment({
+        authorId: "someone_else",
+        authorUsername: "OurBrand",
+        account,
+      })
+    ).toBe(true);
+  });
+
+  it("returns false for a different commenter", () => {
+    expect(
+      isOwnAccountComment({
+        authorId: "user_789",
+        authorUsername: "fan_account",
+        account,
+      })
+    ).toBe(false);
+  });
+
+  it("returns false when neither id nor username is provided", () => {
+    expect(
+      isOwnAccountComment({ authorId: null, authorUsername: null, account })
+    ).toBe(false);
+  });
+});
+
+describe("recordInstagramComment", () => {
+  beforeEach(() => {
+    mockUpsert.mockReset();
+  });
+
+  it("upserts by commentId with the given fields", async () => {
+    mockUpsert.mockResolvedValue({});
+    const commentedAt = new Date("2026-09-27T12:00:00Z");
+
+    await recordInstagramComment("account_1", {
+      commentId: "comment_1",
+      mediaId: "media_1",
+      text: "quero o link",
+      username: "fan1",
+      commentedAt,
+    });
+
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockUpsert).toHaveBeenCalledWith({
+      where: { commentId: "comment_1" },
+      create: {
+        commentId: "comment_1",
+        instagramAccountId: "account_1",
+        mediaId: "media_1",
+        text: "quero o link",
+        username: "fan1",
+        commentedAt,
+        parentId: null,
+      },
+      update: {
+        text: "quero o link",
+        username: "fan1",
+        commentedAt,
+        parentId: null,
+      },
+    });
+  });
+
+  it("is idempotent: calling it twice for the same commentId still upserts (never creates a duplicate)", async () => {
+    mockUpsert.mockResolvedValue({});
+    const commentedAt = new Date("2026-09-27T12:00:00Z");
+    const input = {
+      commentId: "comment_1",
+      mediaId: "media_1",
+      text: "quero o link",
+      commentedAt,
+    };
+
+    await recordInstagramComment("account_1", input);
+    await recordInstagramComment("account_1", { ...input, text: "quero o link!" });
+
+    expect(mockUpsert).toHaveBeenCalledTimes(2);
+    expect(mockUpsert.mock.calls[0][0].where).toEqual({ commentId: "comment_1" });
+    expect(mockUpsert.mock.calls[1][0].where).toEqual({ commentId: "comment_1" });
+    expect(mockUpsert.mock.calls[1][0].update.text).toBe("quero o link!");
+  });
+
+  it("swallows a write failure instead of throwing", async () => {
+    mockUpsert.mockRejectedValue(new Error("connection lost"));
+
+    await expect(
+      recordInstagramComment("account_1", {
+        commentId: "comment_1",
+        mediaId: "media_1",
+        text: "quero o link",
+        commentedAt: new Date(),
+      })
+    ).resolves.toBeUndefined();
+  });
+});

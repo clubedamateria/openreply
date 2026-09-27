@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db/client';
 import { getDMQueue, MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from '@/lib/queue/client';
 import { parseCommentEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
+import { recordInstagramComment } from '@/lib/comments/sync';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
@@ -39,6 +40,18 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
     for (const event of commentEvents) {
       const account = accountMap.get(event.instagramAccountId);
       if (!account) continue;
+
+      // Record for stats (word cloud, keyword performance, recent comments),
+      // independent of and before the campaign/DM logic below. parseCommentEvents
+      // already drops the account's own comments, so every event here is
+      // audience-authored. A recording failure must never block the DM pipeline.
+      await recordInstagramComment(account.id, {
+        commentId: event.commentId,
+        mediaId: event.mediaId,
+        text: event.commentText,
+        username: event.commenterName ?? null,
+        commentedAt: new Date(),
+      });
 
       await queue.add(
         "process-comment",

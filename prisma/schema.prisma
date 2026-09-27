@@ -146,6 +146,7 @@ model InstagramAccount {
   linkClicks  LinkClick[]
   followerSnapshots FollowerSnapshot[]
   scheduledPosts    ScheduledPost[]
+  comments          InstagramComment[]
 
   @@index([workspaceId])
 }
@@ -484,4 +485,29 @@ enum ScheduledPostStatus {
 enum ScheduledPostSource {
   PAINEL
   LOTE
+}
+
+// One row per Instagram comment, kept for stats (most-commented words/emojis,
+// campaign keyword performance, recent-comments feed) independently of the
+// DM/campaign pipeline. Fed by the real-time comment webhook and by the daily
+// `/api/cron/sync-comments` backfill over each META account's last 30 posts.
+// The account's own comments (public replies posted by the automation) are
+// filtered out before this table is ever written to, at both ingestion
+// points — so every row here is genuinely audience-authored.
+model InstagramComment {
+  id                 String   @id @default(cuid())
+  commentId          String   @unique
+  instagramAccountId String
+  mediaId            String
+  text               String
+  username           String?
+  commentedAt        DateTime
+  parentId           String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  @@index([instagramAccountId, commentedAt])
+  @@index([mediaId])
 }
