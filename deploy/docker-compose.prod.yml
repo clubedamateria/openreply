@@ -42,6 +42,11 @@ services:
     environment:
       DATABASE_URL: postgresql://openreply:${POSTGRES_PASSWORD}@postgres:5432/openreply
       REDIS_URL: redis://redis:6379
+      # Agendados: mídia enviada pelo painel/CLI, servida de volta por
+      # /media/* pelo Caddy a partir do mesmo volume (ver serviço caddy).
+      MEDIA_DIR: /data/media
+    volumes:
+      - media:/data/media
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,6 +95,8 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddydata:/data
       - caddyconfig:/config
+      # Somente leitura: Caddy só serve os arquivos que o web escreveu.
+      - media:/srv/media:ro
     depends_on:
       - web
 
@@ -98,3 +105,4 @@ volumes:
   redisdata:
   caddydata:
   caddyconfig:
+  media:

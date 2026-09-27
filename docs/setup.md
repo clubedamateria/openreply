@@ -128,17 +128,19 @@ Optional, for tuning the polling reconciler (defaults are fine to start):
 | `COMMENT_POLL_MAX_PER_SWEEP` | `30` | Max new comments each campaign acts on per sweep. Keep it conservative; higher gets closer to Instagram's rate limits. |
 | `COMMENT_POLL_LOOKBACK_HOURS` | `72` | How far back a sweep considers comments. |
 
-**Optional, for Agendados (scheduled posts).** Everything below is optional: without it, `/agendados` still loads, but uploads and publishing are disabled instead of throwing.
+**Optional, for Agendados (scheduled posts).** Everything below is optional: without it, `/agendados` still loads, but uploads and publishing are disabled instead of throwing. Media lives on the VM's own disk (a Docker volume shared with Caddy), not an external storage service — see `deploy/Caddyfile` and `deploy/docker-compose.prod.yml`.
 
 | Variable | What it is |
 | --- | --- |
-| `SUPABASE_URL` | Your Supabase project URL, for example `https://xxxx.supabase.co`. Needs a public Storage bucket named `social` (mp4/jpeg/png, 50MB/file) — Instagram's Content Publishing API fetches media from a public URL, so the bucket cannot be private. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Service role key for that project. Server-side only: it signs upload URLs and deletes files after publishing, never reaches the browser. |
-| `SCHEDULER_API_TOKEN` | Bearer token the `agendar-lote` CLI (`scripts/agendar-lote.ts`) presents to `POST /api/scheduled-posts`. Unset closes that route to the CLI; the panel's own "Novo post" form uses your session instead and does not need it. |
-| `RESEND_FROM` | Sender address for the "a scheduled post failed" alert email, reusing `RESEND_API_KEY` above. Can be the same or a different address than `EMAIL_FROM`. |
-| `ALERT_EMAIL_TO` | Who receives that alert. Without this (or `RESEND_FROM`), a failure only goes to the server log. |
+| `MEDIA_DIR` | Where uploaded files are streamed to on disk. Default `/data/media`, which already matches the volume mount in `deploy/docker-compose.prod.yml` — only override this for a non-Docker deploy. Needs to be reachable from a public URL (Instagram's Content Publishing API fetches media from a public URL), which is what Caddy's `/media/*` block provides. |
+| `MEDIA_PUBLIC_BASE_URL` | Optional override for that public URL, if it isn't simply `$NEXTAUTH_URL/media` (e.g. a CDN in front of Caddy). |
+| `SCHEDULER_API_TOKEN` | Bearer token the `agendar-lote` CLI (`scripts/agendar-lote.ts`) presents to `POST /api/scheduled-posts` and `POST /api/scheduled-posts/upload`. Unset closes those routes to the CLI; the panel's own "Novo post" form uses your session instead and does not need it. |
+| `RESEND_FROM` | Sender address for the "a scheduled post failed" (or "published but unconfirmed") alert email, reusing `RESEND_API_KEY` above. Can be the same or a different address than `EMAIL_FROM`. |
+| `ALERT_EMAIL_TO` | Who receives those alerts. Without this (or `RESEND_FROM`), a failure only goes to the server log. |
 
-The `publish-scheduled` cron (container creation, status polling, `media_publish`, and the 24h bucket cleanup) runs every minute from `scripts/cron.sh`, protected by the same `CRON_SECRET` as the other cron routes. Publishing requires the `instagram_business_content_publish` scope — accounts connected before this feature shipped need to reconnect once (Settings, Connect Instagram) to grant it. Only direct-Meta accounts can publish; a Zernio-connected account fails a scheduled post immediately with a clear message.
+Only `video/mp4` and `image/jpeg` are ever accepted for upload — the Content Publishing API doesn't take PNG for images at all, so it's rejected up front (in both the form and the `agendar-lote` CLI) with a clear message instead of failing hours later when the cron tries to publish it. Uploads are capped at 200MB and streamed straight to disk, never buffered in memory. The same file (by content hash, not filename) can never be scheduled twice for the same account unless you pass `force: true` — this survives even after the file itself is cleaned up post-publish.
+
+The `publish-scheduled` cron (container creation, status polling, `media_publish`, reconciliation of any post stuck mid-publish, and disk cleanup) runs every minute from `scripts/cron.sh`, protected by the same `CRON_SECRET` as the other cron routes (compared in constant time; an empty secret fails closed instead of accepting requests). A single global advisory lock (Postgres, via a dedicated connection — see `lib/scheduled-posts/advisory-lock.ts`) keeps two overlapping ticks from working the same post at once. Publishing requires the `instagram_business_content_publish` scope — accounts connected before this feature shipped need to reconnect once (Settings, Connect Instagram) to grant it. Only direct-Meta accounts can publish; a Zernio-connected account fails a scheduled post immediately with a clear message.
 
 ## Connect through Zernio
 

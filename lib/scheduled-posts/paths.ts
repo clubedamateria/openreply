@@ -1,19 +1,37 @@
+import { randomBytes } from "node:crypto";
+
 /**
- * Bucket path convention for agendados: `instagram/<username>/<arquivo>`,
- * shared by the panel upload route, the `agendar-lote` CLI and the cleanup
- * step. Deterministic on purpose — the CLI relies on it to tell whether a
- * given local file has already been scheduled (same path = same upload)
- * instead of tracking a separate "already sent" list.
+ * Filenames on the local media disk are flat and content-addressed:
+ * `<sha256 primeiros 16 hex>-<id aleatório>.<ext>`. No per-account folder
+ * (the old `instagram/<username>/<arquivo>` convention): the hash prefix is
+ * what makes content dedup possible, and dropping the original filename
+ * entirely closes the path-traversal and same-name-collision issues a
+ * literal filename invited.
+ *
+ * Only `mp4` (video) and `jpg` (image) exist — the Content Publishing API
+ * only accepts JPEG images, so PNG is rejected before it ever reaches here.
  */
+export const MEDIA_EXTENSIONS = ["mp4", "jpg"] as const;
+export type MediaExtension = (typeof MEDIA_EXTENSIONS)[number];
 
-export function sanitizeUsernameForPath(username: string): string {
-  return username.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
+export const MEDIA_FILENAME_REGEX = /^[a-f0-9]{16}-[A-Za-z0-9_-]{6,}\.(mp4|jpg)$/;
+
+export const CONTENT_TYPE_TO_EXTENSION: Record<string, MediaExtension> = {
+  "video/mp4": "mp4",
+  "image/jpeg": "jpg",
+};
+
+export function extensionForContentType(contentType: string | null): MediaExtension | null {
+  if (!contentType) return null;
+  return CONTENT_TYPE_TO_EXTENSION[contentType.trim().toLowerCase()] ?? null;
 }
 
-export function sanitizeFilenameForPath(filename: string): string {
-  return filename.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
+/** Builds the on-disk filename once the upload's sha256 is known. */
+export function mediaFilename(sha256Hex: string, extension: MediaExtension): string {
+  const id = randomBytes(6).toString("base64url");
+  return `${sha256Hex.slice(0, 16)}-${id}.${extension}`;
 }
 
-export function storagePathFor(username: string, filename: string): string {
-  return `instagram/${sanitizeUsernameForPath(username)}/${sanitizeFilenameForPath(filename)}`;
+export function isValidMediaFilename(filename: string): boolean {
+  return MEDIA_FILENAME_REGEX.test(filename);
 }

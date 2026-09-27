@@ -2,5 +2,14 @@
 # ou 1.2.3.4.sslip.io enquanto não tiver subdomínio).
 {$SITE_ADDRESS} {
     encode gzip
+
+    # Mídia dos agendados (disco da VM, volume "media" compartilhado com o
+    # serviço web — ver docker-compose.prod.yml). Caddy serve os arquivos
+    # direto, sem passar pelo Next.js; o volume aqui é somente leitura.
+    handle_path /media/* {
+        root * /srv/media
+        file_server
+    }
+
     reverse_proxy web:3000
 }

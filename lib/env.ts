@@ -73,19 +73,22 @@ export function isEmailAllowedToSignIn(
 }
 
 /**
- * Optional Supabase Storage credentials for scheduled posts (video/image
- * uploads and the signed-upload-URL route). Left unset, `/agendados` still
- * renders but uploads and the cron's cleanup step are no-ops — a self-hoster
- * who does not use scheduling is unaffected.
+ * Where uploaded scheduled-post media lives on disk. A Docker volume mounted
+ * on `web` (rw, for uploads/cleanup) and on `caddy` (ro, to serve `/media/*`)
+ * — see deploy/docker-compose.prod.yml and deploy/Caddyfile. Defaults to
+ * `/data/media`, the path the compose file mounts the volume at.
  */
-export function getSupabaseStorageConfig(): {
-  url: string;
-  serviceRoleKey: string;
-} | null {
-  const url = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) return null;
-  return { url, serviceRoleKey };
+export function getMediaDir(): string {
+  return process.env.MEDIA_DIR || "/data/media";
+}
+
+/**
+ * Public base URL files are served from. Defaults to `NEXTAUTH_URL + /media`
+ * (Caddy serves that path straight off the volume); `MEDIA_PUBLIC_BASE_URL`
+ * overrides it for a setup that serves media from a different host/CDN.
+ */
+export function getMediaPublicBaseUrl(): string {
+  return process.env.MEDIA_PUBLIC_BASE_URL || `${getBaseUrl()}/media`;
 }
 
 /**
