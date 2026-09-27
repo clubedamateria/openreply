@@ -128,6 +128,18 @@ Optional, for tuning the polling reconciler (defaults are fine to start):
 | `COMMENT_POLL_MAX_PER_SWEEP` | `30` | Max new comments each campaign acts on per sweep. Keep it conservative; higher gets closer to Instagram's rate limits. |
 | `COMMENT_POLL_LOOKBACK_HOURS` | `72` | How far back a sweep considers comments. |
 
+**Optional, for Agendados (scheduled posts).** Everything below is optional: without it, `/agendados` still loads, but uploads and publishing are disabled instead of throwing.
+
+| Variable | What it is |
+| --- | --- |
+| `SUPABASE_URL` | Your Supabase project URL, for example `https://xxxx.supabase.co`. Needs a public Storage bucket named `social` (mp4/jpeg/png, 50MB/file) — Instagram's Content Publishing API fetches media from a public URL, so the bucket cannot be private. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key for that project. Server-side only: it signs upload URLs and deletes files after publishing, never reaches the browser. |
+| `SCHEDULER_API_TOKEN` | Bearer token the `agendar-lote` CLI (`scripts/agendar-lote.ts`) presents to `POST /api/scheduled-posts`. Unset closes that route to the CLI; the panel's own "Novo post" form uses your session instead and does not need it. |
+| `RESEND_FROM` | Sender address for the "a scheduled post failed" alert email, reusing `RESEND_API_KEY` above. Can be the same or a different address than `EMAIL_FROM`. |
+| `ALERT_EMAIL_TO` | Who receives that alert. Without this (or `RESEND_FROM`), a failure only goes to the server log. |
+
+The `publish-scheduled` cron (container creation, status polling, `media_publish`, and the 24h bucket cleanup) runs every minute from `scripts/cron.sh`, protected by the same `CRON_SECRET` as the other cron routes. Publishing requires the `instagram_business_content_publish` scope — accounts connected before this feature shipped need to reconnect once (Settings, Connect Instagram) to grant it. Only direct-Meta accounts can publish; a Zernio-connected account fails a scheduled post immediately with a clear message.
+
 ## Connect through Zernio
 
 After deployment, sign in as a workspace owner or admin and follow [docs/zernio.md](zernio.md). Save an unrestricted read/write API key with Inbox access, select your existing Zernio profile, then import an Instagram account or connect a new one through Zernio. OpenReply creates its webhook automatically.
