@@ -38,6 +38,7 @@ call() {
 echo "[cron] scheduler started, target $BASE_URL"
 
 last_slot=""
+last_minute=""
 last_daily=""
 
 while true; do
@@ -46,6 +47,13 @@ while true; do
   hhmm=${now#* }
   hour=${hhmm%:*}
   minute=${hhmm#*:}
+
+  # publish-scheduled every minute: it prepares/publishes agendados and a
+  # missed slot means a post going out late, not just a delayed refresh.
+  if [ "$last_minute" != "$hhmm" ]; then
+    last_minute="$hhmm"
+    call publish-scheduled
+  fi
 
   # attach-next-reel every 5 minutes rather than once a day: a campaign created
   # before its reel is published stays inert until this binds it, and a daily
