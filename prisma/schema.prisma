@@ -85,6 +85,7 @@ model Workspace {
   linkClicks        LinkClick[]
   webhookEvents     WebhookEvent[]
   operationalEvents OperationalEvent[]
+  scheduledPosts    ScheduledPost[]
 
   @@index([ownerId])
 }
@@ -144,6 +145,7 @@ model InstagramAccount {
   dmLogs      DmLog[]
   linkClicks  LinkClick[]
   followerSnapshots FollowerSnapshot[]
+  scheduledPosts    ScheduledPost[]
 
   @@index([workspaceId])
 }
@@ -410,4 +412,76 @@ model ZernioConnection {
 model PostbackDelivery {
   id String @id
   createdAt DateTime @default(now())
+}
+
+/// A post queued to publish to Instagram at a future time, uploaded ahead of
+/// time to Supabase Storage so the Mac does not need to stay on. Published by
+/// the `publish-scheduled` cron in two phases (see ScheduledPostStatus).
+model ScheduledPost {
+  id                 String                @id @default(cuid())
+  workspaceId        String
+  instagramAccountId String
+  mediaType          ScheduledPostMediaType
+
+  /// Order matters for CAROUSEL: it is the slide order. One entry for
+  /// REELS/IMAGE.
+  mediaUrls    String[]
+  /// Storage paths (not public URLs) so the cleanup job can delete the exact
+  /// objects 24h after publishing without re-deriving them from the URL.
+  storagePaths String[]
+  /// REELS only: an optional still frame Instagram uses as the video's cover.
+  coverUrl     String?
+
+  /// Capped at 2,200 chars / 30 hashtags by Instagram; enforced at the API
+  /// boundary (zod), not here.
+  caption      String
+  shareToFeed  Boolean @default(true)
+  scheduledFor DateTime
+
+  status ScheduledPostStatus @default(SCHEDULED)
+
+  /// REELS/IMAGE container id. For CAROUSEL, the parent container id (the
+  /// slides are in childContainerIds).
+  containerId       String?
+  childContainerIds String[]
+  /// Set only once media_publish succeeds. A non-null mediaId means
+  /// media_publish must never be called again for this row.
+  mediaId           String? @unique
+  permalink         String?
+
+  attempts     Int       @default(0)
+  errorMessage String?
+  publishedAt  DateTime?
+
+  /// Who created it: the panel form, or the `agendar-lote` CLI.
+  source ScheduledPostSource @default(PAINEL)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledFor])
+  @@index([workspaceId])
+}
+
+enum ScheduledPostMediaType {
+  REELS
+  IMAGE
+  CAROUSEL
+}
+
+enum ScheduledPostStatus {
+  SCHEDULED
+  PREPARING
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELED
+}
+
+enum ScheduledPostSource {
+  PAINEL
+  LOTE
 }
