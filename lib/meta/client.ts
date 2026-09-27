@@ -772,3 +772,177 @@ export async function debugToken(inputToken: string, accessToken: string) {
   const response = await fetch(url.toString());
   return handleResponse(response);
 }
+
+// --- Content Publishing (scheduled posts) --------------------------------
+//
+// Instagram publishing is always two calls: create a container from a public
+// media URL, poll it until Instagram finishes processing the file, then
+// publish the container. A carousel adds a third step (create each slide as
+// its own container first). See docs/2026-09-27-agendados-comentarios.md.
+
+export interface MediaContainer {
+  id: string;
+}
+
+/** Create a REELS container. `coverUrl` is optional — Instagram picks a frame
+ * itself when omitted. */
+export async function createReelsContainer(
+  accessToken: string,
+  igUserId: string,
+  params: { videoUrl: string; caption: string; shareToFeed: boolean; coverUrl?: string }
+): Promise<MediaContainer> {
+  const response = await fetch(`${instagramGraphBase()}/${igUserId}/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      media_type: "REELS",
+      video_url: params.videoUrl,
+      caption: params.caption,
+      share_to_feed: params.shareToFeed,
+      ...(params.coverUrl ? { cover_url: params.coverUrl } : {}),
+    }),
+  });
+
+  return handleResponse(response);
+}
+
+/** Create a single-image container. */
+export async function createImageContainer(
+  accessToken: string,
+  igUserId: string,
+  params: { imageUrl: string; caption: string }
+): Promise<MediaContainer> {
+  const response = await fetch(`${instagramGraphBase()}/${igUserId}/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      image_url: params.imageUrl,
+      caption: params.caption,
+    }),
+  });
+
+  return handleResponse(response);
+}
+
+/** Create one carousel slide. Instagram infers image vs video from which URL
+ * field is present, so the caller decides `isVideo` from the file extension. */
+export async function createCarouselChildContainer(
+  accessToken: string,
+  igUserId: string,
+  params: { mediaUrl: string; isVideo: boolean }
+): Promise<MediaContainer> {
+  const response = await fetch(`${instagramGraphBase()}/${igUserId}/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      is_carousel_item: true,
+      ...(params.isVideo
+        ? { video_url: params.mediaUrl }
+        : { image_url: params.mediaUrl }),
+    }),
+  });
+
+  return handleResponse(response);
+}
+
+/** Create the parent CAROUSEL container once every slide container exists. */
+export async function createCarouselContainer(
+  accessToken: string,
+  igUserId: string,
+  params: { childContainerIds: string[]; caption: string }
+): Promise<MediaContainer> {
+  const response = await fetch(`${instagramGraphBase()}/${igUserId}/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      media_type: "CAROUSEL",
+      children: params.childContainerIds.join(","),
+      caption: params.caption,
+    }),
+  });
+
+  return handleResponse(response);
+}
+
+export type ContainerStatusCode =
+  | "EXPIRED"
+  | "ERROR"
+  | "FINISHED"
+  | "IN_PROGRESS"
+  | "PUBLISHED";
+
+export interface ContainerStatus {
+  status_code: ContainerStatusCode;
+  status?: string;
+}
+
+/** Poll a media container's processing status. Reels can take up to a couple
+ * of minutes; callers should not block on this — check once per cron tick. */
+export async function getContainerStatus(
+  accessToken: string,
+  containerId: string
+): Promise<ContainerStatus> {
+  const url = new URL(`${instagramGraphBase()}/${containerId}`);
+  url.searchParams.set("fields", "status_code,status");
+  url.searchParams.set("access_token", accessToken);
+  const response = await fetch(url.toString());
+  return handleResponse(response);
+}
+
+/** Publish a FINISHED container. `mediaId` on the caller's row must stay
+ * unset until this resolves — it is what prevents a double publish. */
+export async function publishMediaContainer(
+  accessToken: string,
+  igUserId: string,
+  creationId: string
+): Promise<{ id: string }> {
+  const url = new URL(`${instagramGraphBase()}/${igUserId}/media_publish`);
+  url.searchParams.set("creation_id", creationId);
+  url.searchParams.set("access_token", accessToken);
+  const response = await fetch(url.toString(), { method: "POST" });
+  return handleResponse(response);
+}
+
+/** The public URL of a just-published post, for the panel's "view post" link. */
+export async function getMediaPermalink(
+  accessToken: string,
+  mediaId: string
+): Promise<{ permalink?: string }> {
+  const url = new URL(`${instagramGraphBase()}/${mediaId}`);
+  url.searchParams.set("fields", "permalink");
+  url.searchParams.set("access_token", accessToken);
+  const response = await fetch(url.toString());
+  return handleResponse(response);
+}
+
+export interface PublishingLimit {
+  quota_usage: number;
+  config: { quota_total: number; quota_duration: number };
+}
+
+/** The account's rolling publishing quota (100 posts / 24h at the time of
+ * writing). Checked before every publish so a busy account degrades to
+ * "wait for next tick" instead of a hard Meta error. */
+export async function getContentPublishingLimit(
+  accessToken: string,
+  igUserId: string
+): Promise<PublishingLimit | null> {
+  const url = new URL(`${instagramGraphBase()}/${igUserId}/content_publishing_limit`);
+  url.searchParams.set("fields", "config,quota_usage");
+  url.searchParams.set("access_token", accessToken);
+  const response = await fetch(url.toString());
+  const data = await handleResponse<{ data: PublishingLimit[] }>(response);
+  return data.data?.[0] ?? null;
+}
