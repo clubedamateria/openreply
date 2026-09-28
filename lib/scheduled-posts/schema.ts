@@ -16,6 +16,65 @@ function countHashtags(caption: string): number {
 
 export const scheduledPostMediaTypeSchema = z.enum(["REELS", "IMAGE", "CAROUSEL"]);
 
+/**
+ * Fase 4: publish destination. INSTAGRAM (default, unchanged flow) or
+ * TIKTOK/YOUTUBE (YouTube Shorts) via Zernio — see
+ * lib/scheduled-posts/engine.ts. `instagramAccountId`/`username` stay
+ * required for every platform below: even a TIKTOK/YOUTUBE row still needs
+ * one to resolve `workspaceId` (app/api/scheduled-posts/route.ts) — the
+ * Zernio account itself is resolved server-side from env
+ * (`getZernioAccountIdForPlatform`), never from client input.
+ */
+export const scheduledPostPlatformSchema = z.enum(["INSTAGRAM", "TIKTOK", "YOUTUBE"]);
+
+/** TikTok's own Content Posting API values. A Business account (the only
+ * kind Zernio connects) only actually accepts PUBLIC_TO_EVERYONE — the panel
+ * still offers all four (so a Creator account works too) but shows a warning
+ * (docs.zernio.com/platforms/tiktok). No default: the operator must pick one
+ * every time, on purpose. */
+export const TIKTOK_PRIVACY_LEVELS = [
+  "PUBLIC_TO_EVERYONE",
+  "MUTUAL_FOLLOW_FRIENDS",
+  "FOLLOWER_OF_CREATOR",
+  "SELF_ONLY",
+] as const;
+
+export const tikTokSettingsSchema = z.object({
+  privacyLevel: z.enum(TIKTOK_PRIVACY_LEVELS, {
+    message: "Escolha a privacidade do TikTok",
+  }),
+  allowComment: z.boolean().optional().default(true),
+  allowDuet: z.boolean().optional().default(true),
+  allowStitch: z.boolean().optional().default(true),
+  // The one checkbox ("Confirmo que revisei o conteúdo e concordo com a
+  // Music Usage Confirmation do TikTok") feeds BOTH
+  // content_preview_confirmed and express_consent_given at the Zernio/TikTok
+  // API boundary (lib/zernio/client.ts) — TikTok requires both to be an
+  // explicit, human confirmation, never a silent default.
+  consentGiven: z.boolean().refine((v) => v === true, {
+    message:
+      'Confirme "revisei o conteúdo e concordo com a Music Usage Confirmation do TikTok" para publicar no TikTok',
+  }),
+});
+
+export const YOUTUBE_VISIBILITIES = ["public", "unlisted", "private"] as const;
+export const MAX_YOUTUBE_TITLE_LENGTH = 100;
+
+export const youtubeSettingsSchema = z.object({
+  // No schema-level default: the UI/CLI compute "1ª linha da legenda,
+  // cortada em 100 caracteres" themselves before submitting (a cross-field
+  // default zod itself can't express cleanly) — see
+  // components/scheduled-post-form.tsx and scripts/agendar-lote.ts.
+  title: z
+    .string()
+    .min(1, "Título é obrigatório")
+    .max(MAX_YOUTUBE_TITLE_LENGTH, `Título não pode passar de ${MAX_YOUTUBE_TITLE_LENGTH} caracteres`),
+  visibility: z.enum(YOUTUBE_VISIBILITIES).optional().default("public"),
+  // No `.optional()`/default on purpose — COPPA ("Feito para crianças?") is
+  // required on every YouTube upload; there is no safe default to assume.
+  madeForKids: z.boolean({ message: '"Feito para crianças?" é obrigatório' }),
+});
+
 const captionSchema = z
   .string()
   .max(MAX_CAPTION_LENGTH, `A legenda não pode passar de ${MAX_CAPTION_LENGTH} caracteres`)
@@ -51,7 +110,9 @@ export const createScheduledPostSchema = z
   .object({
     mediaType: scheduledPostMediaTypeSchema,
     storagePaths: z.array(mediaFilenameSchema).min(1).max(10),
-    // REELS only: an optional still frame for the cover.
+    // REELS only: an optional still frame for the cover. Instagram-only (see
+    // the platform refine below) — TikTok/YouTube via Zernio have no
+    // equivalent field in this version.
     coverPath: mediaFilenameSchema.optional(),
     caption: captionSchema,
     shareToFeed: z.boolean().optional().default(true),
@@ -62,6 +123,13 @@ export const createScheduledPostSchema = z
     }),
     instagramAccountId: z.string().min(1).optional(),
     username: z.string().min(1).optional(),
+    // Fase 4. Required for every platform — even TIKTOK/YOUTUBE still use
+    // instagramAccountId/username as the "context account" that resolves
+    // workspaceId (app/api/scheduled-posts/route.ts); only an INSTAGRAM row
+    // actually stores it as its own `instagramAccountId` column.
+    platform: scheduledPostPlatformSchema.optional().default("INSTAGRAM"),
+    tiktokSettings: tikTokSettingsSchema.optional(),
+    youtubeSettings: youtubeSettingsSchema.optional(),
     // Bypasses the content-hash dedup check (bloqueador 3) for a deliberate
     // re-post of the exact same file.
     force: z.boolean().optional().default(false),
@@ -83,6 +151,22 @@ export const createScheduledPostSchema = z
   .refine((d) => d.mediaType === "REELS" || !d.coverPath, {
     message: "coverPath só se aplica a posts do tipo REELS",
     path: ["coverPath"],
+  })
+  .refine((d) => d.platform === "INSTAGRAM" || d.mediaType === "REELS", {
+    message: "TikTok e YouTube Shorts só aceitam vídeo (mediaType REELS) por enquanto",
+    path: ["mediaType"],
+  })
+  .refine((d) => d.platform === "INSTAGRAM" || !d.coverPath, {
+    message: "coverPath só se aplica a posts do Instagram",
+    path: ["coverPath"],
+  })
+  .refine((d) => d.platform !== "TIKTOK" || Boolean(d.tiktokSettings), {
+    message: "Informe tiktokSettings (privacidade e consentimento) para publicar no TikTok",
+    path: ["tiktokSettings"],
+  })
+  .refine((d) => d.platform !== "YOUTUBE" || Boolean(d.youtubeSettings), {
+    message: "Informe youtubeSettings (título, visibilidade e madeForKids) para publicar no YouTube",
+    path: ["youtubeSettings"],
   })
   .refine((d) => !isScheduledForTooFarInThePast(d.scheduledFor), {
     message: "scheduledFor não pode ser mais de 5 minutos no passado",
