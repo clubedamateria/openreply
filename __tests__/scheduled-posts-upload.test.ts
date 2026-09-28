@@ -60,17 +60,26 @@ describe("POST /api/scheduled-posts/upload", () => {
     expect(res.status).toBe(415);
   });
 
-  it("rejects via content-length header before reading the body, when declared over 200MB", async () => {
-    const res = await POST(request(Buffer.from("x"), "video/mp4", 201 * 1024 * 1024));
+  it("rejects via content-length header before reading the body, when declared over 100MB", async () => {
+    const res = await POST(mp4Request(Buffer.from("x"), 101 * 1024 * 1024));
     expect(res.status).toBe(413);
     expect(fs.readdirSync(mediaDir)).toHaveLength(0);
   });
 
+  // A real MP4 starts with a `ftyp` box at byte offset 4 — the exact bytes
+  // before/after don't matter for the magic-bytes check, only that offset.
+  const FAKE_MP4_HEADER = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+  const FAKE_JPEG_HEADER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+
+  function mp4Request(body: BodyInit, contentLength?: number) {
+    return request(body, "video/mp4", contentLength);
+  }
+
   it("streams a small file to disk, hashes it, and names it by content", async () => {
-    const content = Buffer.from("a".repeat(1000));
+    const content = Buffer.concat([FAKE_MP4_HEADER, Buffer.from("a".repeat(1000))]);
     const expectedHash = createHash("sha256").update(content).digest("hex");
 
-    const res = await POST(request(content, "video/mp4"));
+    const res = await POST(mp4Request(content));
     expect(res.status).toBe(200);
     const json = await res.json();
 
@@ -87,14 +96,34 @@ describe("POST /api/scheduled-posts/upload", () => {
   });
 
   it("names a JPEG upload with the .jpg extension", async () => {
-    const res = await POST(request(Buffer.from("fake-jpeg-bytes"), "image/jpeg"));
+    const res = await POST(
+      request(Buffer.concat([FAKE_JPEG_HEADER, Buffer.from("fake-jpeg-bytes")]), "image/jpeg")
+    );
     const json = await res.json();
     expect(json.data.path).toMatch(/\.jpg$/);
   });
 
-  it("aborts mid-stream and writes nothing when the body exceeds 200MB (no content-length pre-check)", async () => {
+  it("Rodada 3, achado 8: rejects an mp4 upload whose bytes don't start with a real ftyp box", async () => {
+    const res = await POST(mp4Request(Buffer.from("not-actually-an-mp4-".repeat(5))));
+    expect(res.status).toBe(415);
+    expect(fs.readdirSync(mediaDir)).toHaveLength(0);
+  });
+
+  it("Rodada 3, achado 8: rejects a jpeg upload whose bytes don't start with FF D8 FF", async () => {
+    const res = await POST(request(Buffer.from("not-actually-a-jpeg-"), "image/jpeg"));
+    expect(res.status).toBe(415);
+    expect(fs.readdirSync(mediaDir)).toHaveLength(0);
+  });
+
+  it("Rodada 3, achado 8: rejects a file too short to even check the magic bytes", async () => {
+    const res = await POST(mp4Request(Buffer.from("hi")));
+    expect(res.status).toBe(415);
+    expect(fs.readdirSync(mediaDir)).toHaveLength(0);
+  });
+
+  it("aborts mid-stream and writes nothing when the body exceeds 100MB (no content-length pre-check)", async () => {
     const CHUNK = 10 * 1024 * 1024; // 10MB per chunk
-    const chunks = Math.ceil((200 * 1024 * 1024) / CHUNK) + 2; // push past the limit
+    const chunks = Math.ceil((100 * 1024 * 1024) / CHUNK) + 2; // push past the limit
     let sent = 0;
     const limited = new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -103,7 +132,12 @@ describe("POST /api/scheduled-posts/upload", () => {
           return;
         }
         sent += 1;
-        controller.enqueue(new Uint8Array(CHUNK));
+        // The first chunk carries a valid ftyp header so this test exercises
+        // the SIZE limit specifically, not the (separately tested) magic
+        // bytes check.
+        const chunk = new Uint8Array(CHUNK);
+        if (sent === 1) chunk.set(FAKE_MP4_HEADER);
+        controller.enqueue(chunk);
       },
     });
 

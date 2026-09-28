@@ -15,9 +15,28 @@ import { resolveScheduledPostActor } from "@/lib/scheduled-posts/auth";
 export const runtime = "nodejs";
 
 // The Content Publishing API caps video at far more than this, but the VM
-// this runs on has 1GB of RAM total — 200MB is a ceiling on how much a
-// single bad/huge upload can cost in disk I/O and time, not a Meta limit.
-const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+// this runs on has 1GB of RAM total and a modest upstream connection — 100MB
+// already covers a 90s Reel at 1080p, and Rodada 3 (achado 9) lowered this
+// from 200MB after a slow upload of a file near that old ceiling was
+// observed hitting the reverse proxy's own ~300s timeout (408) before the
+// stream ever finished. See docs/setup.md for the operational note.
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+// Enough bytes to see both magic numbers this route cares about: JPEG's
+// 3-byte signature (`FF D8 FF`) and MP4's `ftyp` box type, which starts at
+// byte offset 4.
+const MAGIC_CHECK_BYTES = 12;
+
+/** Rodada 3, achado 8: the declared `content-type` header is just a claim —
+ * checking the file's own magic bytes catches a mislabeled upload (by
+ * accident or otherwise) before it is ever handed to Meta, where it would
+ * fail hours later with a far more confusing error. */
+function magicBytesMatch(buf: Buffer, extension: "mp4" | "jpg"): boolean {
+  if (extension === "jpg") {
+    return buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  }
+  return buf.length >= 8 && buf.subarray(4, 8).toString("ascii") === "ftyp";
+}
 
 /**
  * Streams a raw file body straight to `MEDIA_DIR`, never buffering it in
@@ -55,7 +74,7 @@ export async function POST(request: NextRequest) {
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (declaredLength > MAX_UPLOAD_BYTES) {
     return NextResponse.json(
-      { success: false, error: "Arquivo maior que 200MB" },
+      { success: false, error: "Arquivo maior que 100MB" },
       { status: 413 }
     );
   }
@@ -71,6 +90,9 @@ export async function POST(request: NextRequest) {
   const hash = createHash("sha256");
   let size = 0;
   let tooLarge = false;
+  let magicMismatch = false;
+  let magicChecked = false;
+  let magicBuffer = Buffer.alloc(0);
 
   const nodeSource = Readable.fromWeb(request.body as unknown as NodeReadableStream<Uint8Array>);
 
@@ -83,7 +105,25 @@ export async function POST(request: NextRequest) {
         throw new Error("upload-too-large");
       }
       hash.update(chunk);
+
+      if (!magicChecked) {
+        magicBuffer = Buffer.concat([magicBuffer, chunk]);
+        if (magicBuffer.length >= MAGIC_CHECK_BYTES) {
+          magicChecked = true;
+          if (!magicBytesMatch(magicBuffer, extension)) {
+            magicMismatch = true;
+            throw new Error("magic-bytes-mismatch");
+          }
+        }
+      }
+
       yield chunk;
+    }
+    if (!magicChecked) {
+      // The whole file was smaller than what it takes to even check — too
+      // small to be a real video/image either way.
+      magicMismatch = true;
+      throw new Error("magic-bytes-mismatch");
     }
   }
 
@@ -93,8 +133,18 @@ export async function POST(request: NextRequest) {
     await unlink(tmpPath).catch(() => {});
     if (tooLarge) {
       return NextResponse.json(
-        { success: false, error: "Arquivo maior que 200MB" },
+        { success: false, error: "Arquivo maior que 100MB" },
         { status: 413 }
+      );
+    }
+    if (magicMismatch) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "O conteúdo do arquivo não bate com o tipo declarado — confira se não é outro formato com a extensão trocada.",
+        },
+        { status: 415 }
       );
     }
     console.error("[Agendados] upload falhou:", err);
