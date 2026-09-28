@@ -463,6 +463,15 @@ model ScheduledPost {
   attempts     Int       @default(0)
   errorMessage String?
   publishedAt  DateTime?
+  /// Set on a FAILED row when the engine genuinely could not confirm whether
+  /// Meta had already published it before giving up (a media_publish call
+  /// whose response was lost, or a container stuck PUBLISHING through a
+  /// prolonged Meta outage) — see reconcilePublishedContainer in
+  /// lib/scheduled-posts/engine.ts. Retry/reschedule
+  /// (app/api/scheduled-posts/[id]/route.ts) refuses to blindly recreate the
+  /// container for a row with this set unless the caller confirms the old
+  /// container really wasn't published (or passes `force`).
+  outcomeUncertain Boolean @default(false)
 
   /// Who created it: the panel form, or the `agendar-lote` CLI.
   source ScheduledPostSource @default(PAINEL)
@@ -475,7 +484,7 @@ model ScheduledPost {
 
   @@index([status, scheduledFor])
   @@index([workspaceId])
-  @@index([contentHash])
+  @@index([contentHash], type: Gin)
 }
 
 enum ScheduledPostMediaType {

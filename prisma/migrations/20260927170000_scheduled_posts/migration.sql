@@ -29,6 +29,7 @@ CREATE TABLE "ScheduledPost" (
     "attempts" INTEGER NOT NULL DEFAULT 0,
     "errorMessage" TEXT,
     "publishedAt" TIMESTAMP(3),
+    "outcomeUncertain" BOOLEAN NOT NULL DEFAULT false,
     "source" "ScheduledPostSource" NOT NULL DEFAULT 'PAINEL',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
