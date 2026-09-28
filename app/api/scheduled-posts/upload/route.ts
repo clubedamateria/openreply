@@ -59,8 +59,8 @@ export async function POST(request: NextRequest) {
   }
 
   const contentType = request.headers.get("content-type");
-  const extension = extensionForContentType(contentType);
-  if (!extension) {
+  const extensionOrNull = extensionForContentType(contentType);
+  if (!extensionOrNull) {
     return NextResponse.json(
       {
         success: false,
@@ -70,6 +70,10 @@ export async function POST(request: NextRequest) {
       { status: 415 }
     );
   }
+  // Narrowed to a fresh binding: TS does not carry the null-check above
+  // through into the async generator closure below, which references the
+  // outer scope rather than being evaluated in place.
+  const extension: "mp4" | "jpg" = extensionOrNull;
 
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (declaredLength > MAX_UPLOAD_BYTES) {

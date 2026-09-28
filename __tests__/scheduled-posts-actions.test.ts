@@ -16,7 +16,7 @@ const { mockPrisma, mockGetWorkspaceId, mockDecryptToken, mockGetContainerStatus
     mockGetWorkspaceId: vi.fn(async () => "ws_1" as string | null),
     mockDecryptToken: vi.fn((token: string) => token),
     mockGetContainerStatus: vi.fn(),
-    mockReconcile: vi.fn(async () => undefined),
+    mockReconcile: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
     mockMediaFileExists: vi.fn(async () => true),
   }));
 
