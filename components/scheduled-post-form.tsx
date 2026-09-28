@@ -7,6 +7,11 @@
  * stream straight from the browser to the VM's disk (`POST
  * /api/scheduled-posts/upload`, session-authenticated) — then the row is
  * created with `POST /api/scheduled-posts`.
+ *
+ * Fase 4: TikTok and YouTube Shorts join Instagram as destination
+ * checkboxes. One shared upload (same files, same date/time) fans out into
+ * one `POST /api/scheduled-posts` per checked destination — see
+ * docs/2026-09-27-agendados-comentarios.md, "Fase 4".
  */
 
 import { useEffect, useState } from "react";
@@ -15,16 +20,38 @@ import {
   AlertCircle,
   ArrowLeft,
   CalendarClock,
+  CheckCircle2,
   Clapperboard,
   ImagePlus,
+  Camera,
   Layers,
   Loader2,
+  Music2,
   UploadCloud,
+  SquarePlay,
 } from "lucide-react";
 import type { AccountOption } from "@/components/account-select";
 import { saoPauloToUtcIso } from "@/lib/scheduled-posts/timezone";
 
 type MediaType = "REELS" | "IMAGE" | "CAROUSEL";
+type Platform = "INSTAGRAM" | "TIKTOK" | "YOUTUBE";
+
+// Mirrors lib/scheduled-posts/schema.ts's TIKTOK_PRIVACY_LEVELS/
+// YOUTUBE_VISIBILITIES/MAX_YOUTUBE_TITLE_LENGTH — duplicated here (rather
+// than imported) because that module also pulls in lib/scheduled-posts/
+// paths.ts, which uses node:crypto and cannot be bundled client-side.
+const TIKTOK_PRIVACY_LEVELS: { value: string; label: string }[] = [
+  { value: "PUBLIC_TO_EVERYONE", label: "Público (todos)" },
+  { value: "MUTUAL_FOLLOW_FRIENDS", label: "Amigos (seguem um ao outro)" },
+  { value: "FOLLOWER_OF_CREATOR", label: "Seguidores" },
+  { value: "SELF_ONLY", label: "Só eu" },
+];
+const YOUTUBE_VISIBILITIES: { value: string; label: string }[] = [
+  { value: "public", label: "Público" },
+  { value: "unlisted", label: "Não listado" },
+  { value: "private", label: "Privado" },
+];
+const MAX_YOUTUBE_TITLE_LENGTH = 100;
 
 // Only video/mp4 and image/jpeg are ever accepted server-side — the
 // Content Publishing API does not take PNG for images at all, so it is left
@@ -37,6 +64,10 @@ const MEDIA_TYPE_OPTIONS: { value: MediaType; label: string; icon: typeof Clappe
 
 function isPng(file: File): boolean {
   return file.type === "image/png" || /\.png$/i.test(file.name);
+}
+
+function firstCaptionLine(caption: string): string {
+  return caption.split("\n")[0]?.trim().slice(0, MAX_YOUTUBE_TITLE_LENGTH) ?? "";
 }
 
 async function uploadFile(file: File): Promise<{ path: string; url: string }> {
@@ -66,6 +97,28 @@ export default function ScheduledPostForm() {
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [partialSuccess, setPartialSuccess] = useState<string[]>([]);
+
+  // Fase 4: destination checkboxes. TikTok/YouTube start disabled until
+  // /api/scheduled-posts/destinations confirms the env is configured for
+  // them — never assumed available.
+  const [destinations, setDestinations] = useState<Record<Platform, boolean>>({
+    INSTAGRAM: true,
+    TIKTOK: false,
+    YOUTUBE: false,
+  });
+  const [enabledDestinations, setEnabledDestinations] = useState({ tiktok: false, youtube: false });
+
+  const [tiktokPrivacy, setTiktokPrivacy] = useState(""); // no default, on purpose
+  const [tiktokAllowComment, setTiktokAllowComment] = useState(true);
+  const [tiktokAllowDuet, setTiktokAllowDuet] = useState(true);
+  const [tiktokAllowStitch, setTiktokAllowStitch] = useState(true);
+  const [tiktokConsent, setTiktokConsent] = useState(false);
+
+  const [youtubeTitle, setYoutubeTitle] = useState("");
+  const [youtubeTitleTouched, setYoutubeTitleTouched] = useState(false);
+  const [youtubeVisibility, setYoutubeVisibility] = useState("public");
+  const [youtubeMadeForKids, setYoutubeMadeForKids] = useState<"" | "sim" | "nao">(""); // no default, on purpose
 
   useEffect(() => {
     fetch("/api/instagram/accounts")
@@ -76,19 +129,45 @@ export default function ScheduledPostForm() {
           setInstagramAccountId((prev) => prev || res.data.selectedInstagramAccountId || "");
         }
       });
+    fetch("/api/scheduled-posts/destinations")
+      .then((r) => r.json())
+      .then((res) => {
+        if (res.success) setEnabledDestinations(res.data);
+      });
   }, []);
+
+  // A TikTok/YouTube-only video and the shared upload with Instagram must be
+  // the very same file set — REELS is the only mediaType either accepts, so
+  // checking either one locks the type picker to REELS.
+  const needsVideoOnly = destinations.TIKTOK || destinations.YOUTUBE;
 
   const selectedOption = MEDIA_TYPE_OPTIONS.find((o) => o.value === mediaType)!;
   const hashtagCount = (caption.match(/#[^\s#]+/g) ?? []).length;
+  const effectiveYoutubeTitle = youtubeTitleTouched ? youtubeTitle : firstCaptionLine(caption);
+  const anyDestinationSelected = destinations.INSTAGRAM || destinations.TIKTOK || destinations.YOUTUBE;
 
   function handleMediaTypeChange(next: MediaType) {
+    if (needsVideoOnly && next !== "REELS") return;
     setMediaType(next);
     setFiles([]);
     setCoverFile(null);
   }
 
+  function toggleDestination(platform: Platform, checked: boolean) {
+    setDestinations((prev) => {
+      const next = { ...prev, [platform]: checked };
+      return next;
+    });
+    if ((platform === "TIKTOK" || platform === "YOUTUBE") && checked && mediaType !== "REELS") {
+      setMediaType("REELS");
+      setFiles([]);
+      setCoverFile(null);
+    }
+  }
+
   function validate(): string | null {
-    if (!instagramAccountId) return "Escolha uma conta";
+    if (!instagramAccountId) return "Escolha uma conta (mesmo publicando só no TikTok/YouTube, ela decide o workspace)";
+    if (!anyDestinationSelected) return "Marque pelo menos um destino";
     if (mediaType === "CAROUSEL") {
       if (files.length < 2 || files.length > 10) return "Carrossel precisa de 2 a 10 arquivos";
     } else if (files.length !== 1) {
@@ -98,6 +177,7 @@ export default function ScheduledPostForm() {
     if (pngFile) {
       return `"${pngFile.name}" é PNG — o Instagram (Content Publishing API) só aceita JPEG para imagens`;
     }
+    if (needsVideoOnly && mediaType !== "REELS") return "TikTok e YouTube Shorts só aceitam vídeo";
     if (!date || !time) return "Escolha a data e a hora";
     if (!caption.trim()) return "Escreva a legenda";
     if (caption.length > 2200) return "Legenda acima de 2.200 caracteres";
@@ -105,6 +185,15 @@ export default function ScheduledPostForm() {
     const scheduledFor = saoPauloToUtcIso(date, time);
     if (new Date(scheduledFor).getTime() < Date.now() - 5 * 60_000) {
       return "Escolha uma data/hora que não esteja mais de 5 minutos no passado";
+    }
+    if (destinations.TIKTOK) {
+      if (!tiktokPrivacy) return "TikTok: escolha a privacidade";
+      if (!tiktokConsent) return 'TikTok: confirme "revisei o conteúdo e concordo com a Music Usage Confirmation"';
+    }
+    if (destinations.YOUTUBE) {
+      if (!effectiveYoutubeTitle.trim()) return "YouTube: escreva o título";
+      if (effectiveYoutubeTitle.length > MAX_YOUTUBE_TITLE_LENGTH) return `YouTube: título acima de ${MAX_YOUTUBE_TITLE_LENGTH} caracteres`;
+      if (youtubeMadeForKids === "") return '​YouTube: responda "Feito para crianças?"';
     }
     return null;
   }
@@ -119,6 +208,7 @@ export default function ScheduledPostForm() {
 
     setSubmitting(true);
     setError(null);
+    setPartialSuccess([]);
 
     try {
       const storagePaths: string[] = [];
@@ -129,32 +219,75 @@ export default function ScheduledPostForm() {
       }
 
       let coverPath: string | undefined;
-      if (coverFile) {
+      if (coverFile && destinations.INSTAGRAM) {
         setProgress("Enviando capa...");
         const uploaded = await uploadFile(coverFile);
         coverPath = uploaded.path;
       }
 
-      setProgress("Agendando...");
-      const res = await fetch("/api/scheduled-posts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          instagramAccountId,
-          mediaType,
-          storagePaths,
-          coverPath,
-          caption,
-          shareToFeed,
-          scheduledFor: saoPauloToUtcIso(date, time),
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.error ?? "Falha ao agendar o post");
+      const scheduledFor = saoPauloToUtcIso(date, time);
+      const platformsToSubmit = (["INSTAGRAM", "TIKTOK", "YOUTUBE"] as const).filter((p) => destinations[p]);
+
+      const succeeded: string[] = [];
+      const failed: string[] = [];
+      for (const platform of platformsToSubmit) {
+        setProgress(`Agendando (${platform === "INSTAGRAM" ? "Instagram" : platform === "TIKTOK" ? "TikTok" : "YouTube Shorts"})...`);
+        const res = await fetch("/api/scheduled-posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            instagramAccountId,
+            platform,
+            mediaType,
+            storagePaths,
+            ...(platform === "INSTAGRAM" ? { coverPath } : {}),
+            caption,
+            shareToFeed,
+            scheduledFor,
+            ...(platform === "TIKTOK"
+              ? {
+                  tiktokSettings: {
+                    privacyLevel: tiktokPrivacy,
+                    allowComment: tiktokAllowComment,
+                    allowDuet: tiktokAllowDuet,
+                    allowStitch: tiktokAllowStitch,
+                    consentGiven: tiktokConsent,
+                  },
+                }
+              : {}),
+            ...(platform === "YOUTUBE"
+              ? {
+                  youtubeSettings: {
+                    title: effectiveYoutubeTitle,
+                    visibility: youtubeVisibility,
+                    madeForKids: youtubeMadeForKids === "sim",
+                  },
+                }
+              : {}),
+          }),
+        });
+        const json = await res.json();
+        const label = platform === "INSTAGRAM" ? "Instagram" : platform === "TIKTOK" ? "TikTok" : "YouTube Shorts";
+        if (!res.ok || !json.success) {
+          failed.push(`${label}: ${json.error ?? "falha ao agendar"}`);
+        } else {
+          succeeded.push(label);
+        }
       }
 
-      router.push("/agendados");
+      if (failed.length === 0) {
+        router.push("/agendados");
+        return;
+      }
+
+      setPartialSuccess(succeeded);
+      setError(
+        succeeded.length > 0
+          ? `Agendado em ${succeeded.join(", ")}. Falhou: ${failed.join("; ")}`
+          : `Falhou: ${failed.join("; ")}`
+      );
+      setSubmitting(false);
+      setProgress(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao agendar o post");
       setSubmitting(false);
@@ -203,20 +336,85 @@ export default function ScheduledPostForm() {
         </div>
 
         <div>
+          <span className="label mb-2 block">Destinos</span>
+          <div className="grid grid-cols-3 gap-2">
+            <label
+              className={`flex cursor-pointer flex-col items-center gap-1.5 rounded-[10px] border px-3 py-3 text-sm font-semibold transition-colors ${
+                destinations.INSTAGRAM ? "border-brand bg-brand-soft text-brand" : "border-border text-muted hover:bg-surface-hover"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={destinations.INSTAGRAM}
+                onChange={(e) => toggleDestination("INSTAGRAM", e.target.checked)}
+                className="sr-only"
+              />
+              <Camera size={20} aria-hidden="true" />
+              Instagram
+            </label>
+            <label
+              className={`flex flex-col items-center gap-1.5 rounded-[10px] border px-3 py-3 text-sm font-semibold transition-colors ${
+                !enabledDestinations.tiktok
+                  ? "cursor-not-allowed border-border text-muted opacity-50"
+                  : destinations.TIKTOK
+                    ? "cursor-pointer border-brand bg-brand-soft text-brand"
+                    : "cursor-pointer border-border text-muted hover:bg-surface-hover"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={destinations.TIKTOK}
+                disabled={!enabledDestinations.tiktok}
+                onChange={(e) => toggleDestination("TIKTOK", e.target.checked)}
+                className="sr-only"
+              />
+              <Music2 size={20} aria-hidden="true" />
+              TikTok
+            </label>
+            <label
+              className={`flex flex-col items-center gap-1.5 rounded-[10px] border px-3 py-3 text-sm font-semibold transition-colors ${
+                !enabledDestinations.youtube
+                  ? "cursor-not-allowed border-border text-muted opacity-50"
+                  : destinations.YOUTUBE
+                    ? "cursor-pointer border-brand bg-brand-soft text-brand"
+                    : "cursor-pointer border-border text-muted hover:bg-surface-hover"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={destinations.YOUTUBE}
+                disabled={!enabledDestinations.youtube}
+                onChange={(e) => toggleDestination("YOUTUBE", e.target.checked)}
+                className="sr-only"
+              />
+              <SquarePlay size={20} aria-hidden="true" />
+              YouTube Shorts
+            </label>
+          </div>
+          {needsVideoOnly && (
+            <p className="helper mt-2">TikTok e YouTube Shorts só aceitam vídeo — o tipo de post ficou travado em Reels.</p>
+          )}
+        </div>
+
+        <div>
           <span className="label mb-2 block">Tipo de post</span>
           <div className="grid grid-cols-3 gap-2">
             {MEDIA_TYPE_OPTIONS.map((option) => {
               const Icon = option.icon;
               const active = option.value === mediaType;
+              const disabled = needsVideoOnly && option.value !== "REELS";
               return (
                 <button
                   key={option.value}
                   type="button"
+                  disabled={disabled}
                   onClick={() => handleMediaTypeChange(option.value)}
                   className={`flex flex-col items-center gap-1.5 rounded-[10px] border px-3 py-3 text-sm font-semibold transition-colors ${
-                    active
-                      ? "border-brand bg-brand-soft text-brand"
-                      : "border-border text-muted hover:bg-surface-hover"
+                    disabled
+                      ? "cursor-not-allowed border-border text-muted opacity-50"
+                      : active
+                        ? "border-brand bg-brand-soft text-brand"
+                        : "border-border text-muted hover:bg-surface-hover"
                   }`}
                 >
                   <Icon size={20} aria-hidden="true" />
@@ -250,10 +448,10 @@ export default function ScheduledPostForm() {
           />
         </div>
 
-        {mediaType === "REELS" && (
+        {mediaType === "REELS" && destinations.INSTAGRAM && (
           <div>
             <label htmlFor="cover" className="label">
-              Capa (opcional)
+              Capa (opcional, só Instagram)
             </label>
             <label
               htmlFor="cover"
@@ -316,15 +514,151 @@ export default function ScheduledPostForm() {
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <input
-            type="checkbox"
-            checked={shareToFeed}
-            onChange={(e) => setShareToFeed(e.target.checked)}
-            className="h-4 w-4 rounded border-border"
-          />
-          Mostrar também no feed
-        </label>
+        {destinations.INSTAGRAM && (
+          <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <input
+              type="checkbox"
+              checked={shareToFeed}
+              onChange={(e) => setShareToFeed(e.target.checked)}
+              className="h-4 w-4 rounded border-border"
+            />
+            Instagram: mostrar também no feed
+          </label>
+        )}
+
+        {destinations.TIKTOK && (
+          <div className="space-y-3 rounded-[10px] border border-border p-4">
+            <p className="flex items-center gap-2 text-sm font-bold text-foreground">
+              <Music2 size={16} aria-hidden="true" />
+              TikTok
+            </p>
+            <div>
+              <label htmlFor="tiktok-privacy" className="label">
+                Privacidade
+              </label>
+              <select
+                id="tiktok-privacy"
+                value={tiktokPrivacy}
+                onChange={(e) => setTiktokPrivacy(e.target.value)}
+                className="field"
+              >
+                <option value="" disabled>
+                  Escolha a privacidade
+                </option>
+                {TIKTOK_PRIVACY_LEVELS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              {tiktokPrivacy && tiktokPrivacy !== "PUBLIC_TO_EVERYONE" && (
+                <p className="helper mt-1 flex items-center gap-1 text-warning">
+                  <AlertCircle size={12} aria-hidden="true" />
+                  Uma conta Business do TikTok só publica com privacidade Pública — outra opção pode falhar.
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-4">
+              <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <input type="checkbox" checked={tiktokAllowComment} onChange={(e) => setTiktokAllowComment(e.target.checked)} className="h-4 w-4 rounded border-border" />
+                Permitir comentários
+              </label>
+              <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <input type="checkbox" checked={tiktokAllowDuet} onChange={(e) => setTiktokAllowDuet(e.target.checked)} className="h-4 w-4 rounded border-border" />
+                Permitir dueto
+              </label>
+              <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <input type="checkbox" checked={tiktokAllowStitch} onChange={(e) => setTiktokAllowStitch(e.target.checked)} className="h-4 w-4 rounded border-border" />
+                Permitir costura
+              </label>
+            </div>
+            <label className="flex items-start gap-2 text-sm font-semibold text-foreground">
+              <input
+                type="checkbox"
+                checked={tiktokConsent}
+                onChange={(e) => setTiktokConsent(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-border"
+              />
+              Confirmo que revisei o conteúdo e concordo com a Music Usage Confirmation do TikTok
+            </label>
+          </div>
+        )}
+
+        {destinations.YOUTUBE && (
+          <div className="space-y-3 rounded-[10px] border border-border p-4">
+            <p className="flex items-center gap-2 text-sm font-bold text-foreground">
+              <SquarePlay size={16} aria-hidden="true" />
+              YouTube Shorts
+            </p>
+            <div>
+              <label htmlFor="youtube-title" className="label">
+                Título
+              </label>
+              <input
+                id="youtube-title"
+                type="text"
+                value={effectiveYoutubeTitle}
+                onChange={(e) => {
+                  setYoutubeTitleTouched(true);
+                  setYoutubeTitle(e.target.value);
+                }}
+                maxLength={MAX_YOUTUBE_TITLE_LENGTH}
+                className="field"
+                placeholder="1ª linha da legenda por padrão"
+              />
+              <p className="helper">{effectiveYoutubeTitle.length}/{MAX_YOUTUBE_TITLE_LENGTH} caracteres</p>
+            </div>
+            <div>
+              <label htmlFor="youtube-visibility" className="label">
+                Visibilidade
+              </label>
+              <select
+                id="youtube-visibility"
+                value={youtubeVisibility}
+                onChange={(e) => setYoutubeVisibility(e.target.value)}
+                className="field"
+              >
+                {YOUTUBE_VISIBILITIES.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <span className="label mb-2 block">Feito para crianças?</span>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <input
+                    type="radio"
+                    name="youtube-made-for-kids"
+                    checked={youtubeMadeForKids === "sim"}
+                    onChange={() => setYoutubeMadeForKids("sim")}
+                    className="h-4 w-4 border-border"
+                  />
+                  Sim
+                </label>
+                <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <input
+                    type="radio"
+                    name="youtube-made-for-kids"
+                    checked={youtubeMadeForKids === "nao"}
+                    onChange={() => setYoutubeMadeForKids("nao")}
+                    className="h-4 w-4 border-border"
+                  />
+                  Não
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {partialSuccess.length > 0 && (
+          <p className="flex items-center gap-2 text-sm text-success">
+            <CheckCircle2 size={16} aria-hidden="true" />
+            Agendado com sucesso em: {partialSuccess.join(", ")}
+          </p>
+        )}
 
         {error && (
           <p className="flex items-center gap-2 text-sm text-error">

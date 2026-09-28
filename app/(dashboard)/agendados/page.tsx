@@ -18,10 +18,13 @@ import {
   Clapperboard,
   ExternalLink,
   ImagePlus,
+  Camera,
   Layers,
+  Music2,
   Plus,
   RotateCcw,
   Rocket,
+  SquarePlay,
 } from "lucide-react";
 import AccountSelect from "@/components/account-select";
 import ScheduledPostStatusBadge from "@/components/scheduled-post-status-badge";
@@ -29,6 +32,16 @@ import { saoPauloToUtcIso } from "@/lib/scheduled-posts/timezone";
 import type { ScheduledPostListItem } from "@/app/api/scheduled-posts/route";
 
 const MEDIA_TYPE_ICON = { REELS: Clapperboard, IMAGE: ImagePlus, CAROUSEL: Layers };
+
+// Fase 4.
+const PLATFORM_CONFIG: Record<
+  ScheduledPostListItem["platform"],
+  { label: string; icon: typeof Camera }
+> = {
+  INSTAGRAM: { label: "Instagram", icon: Camera },
+  TIKTOK: { label: "TikTok", icon: Music2 },
+  YOUTUBE: { label: "YouTube Shorts", icon: SquarePlay },
+};
 
 function dayKey(iso: string): string {
   // en-CA gives YYYY-MM-DD, which sorts correctly as a plain string.
@@ -58,6 +71,7 @@ function formatTime(iso: string): string {
 export default function AgendadosPage() {
   const [accounts, setAccounts] = useState<{ id: string; username: string; instagramId: string }[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("all");
+  const [selectedPlatform, setSelectedPlatform] = useState<"all" | ScheduledPostListItem["platform"]>("all");
   const [posts, setPosts] = useState<ScheduledPostListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -71,6 +85,7 @@ export default function AgendadosPage() {
   const load = useCallback(() => {
     const params = new URLSearchParams();
     if (selectedAccountId !== "all") params.set("instagramAccountId", selectedAccountId);
+    if (selectedPlatform !== "all") params.set("platform", selectedPlatform);
 
     fetch(`/api/scheduled-posts?${params}`)
       .then((r) => r.json())
@@ -83,7 +98,7 @@ export default function AgendadosPage() {
         }
       })
       .catch(() => setError("Falha ao carregar os agendados"));
-  }, [selectedAccountId]);
+  }, [selectedAccountId, selectedPlatform]);
 
   useEffect(() => {
     fetch("/api/instagram/accounts")
@@ -172,6 +187,19 @@ export default function AgendadosPage() {
               onChange={setSelectedAccountId}
             />
           )}
+          <label className="flex flex-col gap-2 text-sm">
+            <span className="label mb-0">Plataforma</span>
+            <select
+              value={selectedPlatform}
+              onChange={(e) => setSelectedPlatform(e.target.value as typeof selectedPlatform)}
+              className="field"
+            >
+              <option value="all">Todas</option>
+              <option value="INSTAGRAM">Instagram</option>
+              <option value="TIKTOK">TikTok</option>
+              <option value="YOUTUBE">YouTube Shorts</option>
+            </select>
+          </label>
           <Link href="/agendados/novo" className="btn btn-primary">
             <Plus size={18} aria-hidden="true" />
             Novo post
@@ -201,6 +229,8 @@ export default function AgendadosPage() {
             <div className="space-y-3">
               {groups.get(day)!.map((post) => {
                 const MediaIcon = MEDIA_TYPE_ICON[post.mediaType];
+                const platformConfig = PLATFORM_CONFIG[post.platform];
+                const PlatformIcon = platformConfig.icon;
                 const isBusy = busyId === post.id;
                 return (
                   <div key={post.id} className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:p-5">
@@ -229,7 +259,13 @@ export default function AgendadosPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="text-sm font-bold text-foreground">{formatTime(post.scheduledFor)}</span>
-                        <span className="text-sm text-muted">@{post.instagramAccount.username}</span>
+                        <span className="badge badge-neutral" title={platformConfig.label}>
+                          <PlatformIcon size={12} aria-hidden="true" />
+                          {platformConfig.label}
+                        </span>
+                        {post.instagramAccount && (
+                          <span className="text-sm text-muted">@{post.instagramAccount.username}</span>
+                        )}
                         <ScheduledPostStatusBadge status={post.status} />
                         {post.source === "LOTE" && <span className="badge badge-neutral">Lote</span>}
                       </div>
