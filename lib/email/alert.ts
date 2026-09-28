@@ -34,6 +34,9 @@ async function sendAlertEmail(subject: string, text: string, logContext: unknown
         subject,
         text,
       }),
+      // Rodada 3, achado 11: a hung Resend request must not hang the cron
+      // tick that triggered this alert — this is fire-and-forget by design.
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!response.ok) {
