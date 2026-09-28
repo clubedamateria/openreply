@@ -151,20 +151,18 @@ export default function ScheduledPostForm() {
       });
   }, []);
 
-  // Rodada 5, achado 5: force back to false (never silently re-enable) any
-  // toggle the creator already turned off in the TikTok app — an
-  // `enabled: false` there means Zernio/TikTok would reject a `true` anyway.
-  useEffect(() => {
-    if (!tiktokCreatorInfo) return;
-    const s = tiktokCreatorInfo.postingLimits.interactionSettings;
-    if (s.allow_comment.enabled === false) setTiktokAllowComment(false);
-    if (s.allow_duet.enabled === false) setTiktokAllowDuet(false);
-    if (s.allow_stitch.enabled === false) setTiktokAllowStitch(false);
-  }, [tiktokCreatorInfo]);
-
+  // Rodada 5, achado 5: whatever the creator already turned off in the
+  // TikTok app itself (`enabled: false`) is forced back to false HERE, at
+  // render time, rather than by calling setState from inside an effect
+  // (which would trigger an extra cascading render) — the raw
+  // tiktokAllowComment/Duet/Stitch state is only ever what the OPERATOR
+  // clicked; these "effective" values are what actually gets shown and sent.
   const tiktokCommentLocked = tiktokCreatorInfo?.postingLimits.interactionSettings.allow_comment.enabled === false;
   const tiktokDuetLocked = tiktokCreatorInfo?.postingLimits.interactionSettings.allow_duet.enabled === false;
   const tiktokStitchLocked = tiktokCreatorInfo?.postingLimits.interactionSettings.allow_stitch.enabled === false;
+  const tiktokAllowCommentEffective = tiktokCommentLocked ? false : tiktokAllowComment;
+  const tiktokAllowDuetEffective = tiktokDuetLocked ? false : tiktokAllowDuet;
+  const tiktokAllowStitchEffective = tiktokStitchLocked ? false : tiktokAllowStitch;
 
   // A TikTok/YouTube-only video and the shared upload with Instagram must be
   // the very same file set — REELS is the only mediaType either accepts, so
@@ -278,9 +276,9 @@ export default function ScheduledPostForm() {
               ? {
                   tiktokSettings: {
                     privacyLevel: tiktokPrivacy,
-                    allowComment: tiktokAllowComment,
-                    allowDuet: tiktokAllowDuet,
-                    allowStitch: tiktokAllowStitch,
+                    allowComment: tiktokAllowCommentEffective,
+                    allowDuet: tiktokAllowDuetEffective,
+                    allowStitch: tiktokAllowStitchEffective,
                     consentGiven: tiktokConsent,
                   },
                 }
@@ -592,7 +590,7 @@ export default function ScheduledPostForm() {
               <label className={`flex items-center gap-2 text-sm font-semibold ${tiktokCommentLocked ? "text-muted" : "text-foreground"}`}>
                 <input
                   type="checkbox"
-                  checked={tiktokAllowComment}
+                  checked={tiktokAllowCommentEffective}
                   disabled={tiktokCommentLocked}
                   onChange={(e) => setTiktokAllowComment(e.target.checked)}
                   className="h-4 w-4 rounded border-border"
@@ -602,7 +600,7 @@ export default function ScheduledPostForm() {
               <label className={`flex items-center gap-2 text-sm font-semibold ${tiktokDuetLocked ? "text-muted" : "text-foreground"}`}>
                 <input
                   type="checkbox"
-                  checked={tiktokAllowDuet}
+                  checked={tiktokAllowDuetEffective}
                   disabled={tiktokDuetLocked}
                   onChange={(e) => setTiktokAllowDuet(e.target.checked)}
                   className="h-4 w-4 rounded border-border"
@@ -612,7 +610,7 @@ export default function ScheduledPostForm() {
               <label className={`flex items-center gap-2 text-sm font-semibold ${tiktokStitchLocked ? "text-muted" : "text-foreground"}`}>
                 <input
                   type="checkbox"
-                  checked={tiktokAllowStitch}
+                  checked={tiktokAllowStitchEffective}
                   disabled={tiktokStitchLocked}
                   onChange={(e) => setTiktokAllowStitch(e.target.checked)}
                   className="h-4 w-4 rounded border-border"

@@ -15,7 +15,23 @@ vi.mock("@/lib/db/client", () => ({ prisma: h.prisma }));
 vi.mock("@/lib/scheduled-posts/advisory-lock", () => ({ withAdvisoryLock: h.withAdvisoryLock }));
 vi.mock("@/lib/meta/oauth", () => ({ decryptToken: h.decryptToken }));
 vi.mock("@/lib/meta/client", () => h.meta);
-vi.mock("@/lib/zernio/client", () => h.zernio);
+// Rodada 5, achado 1: a wholesale `() => h.zernio` mock (the old code here)
+// replaces EVERY export of this module for the whole test file — including
+// `ZernioApiError`/`ZernioDeliveryUnconfirmedError`, which the engine's own
+// `isExplicit4xxMetaError` check narrows on via `instanceof`. That made it
+// structurally impossible for this suite to ever exercise the real classes.
+// `importOriginal` keeps every real export (the two error classes, the
+// `ZERNIO_CREATE_POST_TIMEOUT_MS` constant, etc.) and only swaps the three
+// network-calling functions for the fakes.
+vi.mock("@/lib/zernio/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/zernio/client")>();
+  return {
+    ...actual,
+    createZernioPost: h.zernio.createZernioPost,
+    getZernioPost: h.zernio.getZernioPost,
+    listZernioPosts: h.zernio.listZernioPosts,
+  };
+});
 vi.mock("@/lib/env", () => ({ getZernioApiKey: h.getZernioApiKey }));
 vi.mock("@/lib/storage/media", () => ({
   deleteMediaFiles: h.deleteMediaFiles,
@@ -28,7 +44,16 @@ vi.mock("@/lib/email/alert", () => ({
   sendZernioPublishWarningAlert: h.sendZernioPublishWarningAlert,
 }));
 
-const { runPublishScheduledCron } = await import("../lib/scheduled-posts/engine");
+const { runPublishScheduledCron, reconcileZernioByList, emptyResult } = await import("../lib/scheduled-posts/engine");
+// Rodada 5, achado 1: the REAL ZernioApiError (not a fake `MetaApiError`) —
+// kept alive by the partial `vi.mock` above (`importOriginal`), so this test
+// exercises the actual `httpStatus` bug/fix instead of a class that could
+// never have shown it either way. Imported dynamically, after `h` exists,
+// for the same reason `runPublishScheduledCron` above is: a static
+// top-level import would be hoisted above `const h = ...` and the
+// `vi.mock("@/lib/zernio/client", ...)` factory (which references `h`)
+// would run before `h` is initialized.
+const { ZernioApiError } = await import("@/lib/zernio/client");
 
 const NOW = new Date("2026-10-01T15:00:00.000Z");
 async function tick(now: Date) {
@@ -66,6 +91,10 @@ function tiktokPost(overrides: Row = {}): Row {
     status: "SCHEDULED",
     publishedAt: null,
     updatedAt: NOW,
+    // Rodada 5, achado 2/3: written at claim time alongside `zernioPostId` —
+    // `null` here is the pre-claim state a SCHEDULED row starts in.
+    zernioIdempotencyKey: null,
+    claimedAt: null,
     instagramAccount: null,
     ...overrides,
   };
@@ -108,6 +137,8 @@ function zernioPost(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.rows.clear();
@@ -122,29 +153,55 @@ describe("runPublishScheduledCron — Zernio publish phase (TikTok/YouTube)", ()
 
     const result = await tick(NOW);
 
-    expect(h.zernio.createZernioPost).toHaveBeenCalledWith(
-      "zernio-key",
-      expect.objectContaining({
-        content: "Legenda TikTok",
-        mediaUrl: "https://media.local/video.mp4",
-        platform: "tiktok",
-        accountId: "zernio_tiktok_1",
-        tiktokSettings: {
-          privacy_level: "PUBLIC_TO_EVERYONE",
-          allow_comment: true,
-          allow_duet: true,
-          allow_stitch: true,
-          content_preview_confirmed: true,
-          express_consent_given: true,
-        },
-      }),
-      "sp-tk_1-0"
-    );
+    // Rodada 5, achado 2/3: the idempotency key is a fresh randomUUID(), not
+    // the old `sp-${id}-${attempts}` — captured here instead of hardcoded so
+    // it can also be cross-checked against `metadata.claimKey` and the row's
+    // own `zernioIdempotencyKey` below.
+    expect(h.zernio.createZernioPost).toHaveBeenCalledTimes(1);
+    const [, params, idempotencyKey] = h.zernio.createZernioPost.mock.calls[0];
+    expect(idempotencyKey).toMatch(UUID_REGEX);
+    expect(params).toMatchObject({
+      content: "Legenda TikTok",
+      mediaUrl: "https://media.local/video.mp4",
+      platform: "tiktok",
+      accountId: "zernio_tiktok_1",
+      tiktokSettings: {
+        privacy_level: "PUBLIC_TO_EVERYONE",
+        allow_comment: true,
+        allow_duet: true,
+        allow_stitch: true,
+        content_preview_confirmed: true,
+        express_consent_given: true,
+      },
+      // Rodada 5, achado 3: confirmed metadata field name (docs.zernio.com's
+      // create-post reference) — lets reconciliation match this exact row by
+      // id instead of only by content+media+time-window.
+      metadata: { scheduledPostId: "tk_1", claimKey: idempotencyKey },
+    });
+
     const row = h.rows.get("tk_1")!;
     expect(row.status).toBe("PUBLISHED");
     expect(row.zernioPostId).toBe("zp_1");
     expect(row.permalink).toBe("https://tiktok.com/@conta/video/123");
+    // Rodada 5, achado 2/3: written in the SAME claim write as the status
+    // transition, not left null.
+    expect(row.zernioIdempotencyKey).toBe(idempotencyKey);
+    expect(row.claimedAt).toEqual(NOW);
     expect((result as { published: number }).published).toBe(1);
+  });
+
+  it("generates a DIFFERENT idempotency key for each of two separately-claimed posts (rodada 5, achado 2)", async () => {
+    seed(tiktokPost({ id: "tk_1" }), tiktokPost({ id: "tk_2" }));
+    h.zernio.createZernioPost.mockResolvedValue(zernioPost());
+
+    await tick(NOW);
+
+    expect(h.zernio.createZernioPost).toHaveBeenCalledTimes(2);
+    const key1 = h.zernio.createZernioPost.mock.calls[0][2];
+    const key2 = h.zernio.createZernioPost.mock.calls[1][2];
+    expect(key1).toMatch(UUID_REGEX);
+    expect(key2).toMatch(UUID_REGEX);
+    expect(key1).not.toBe(key2);
   });
 
   it("publishes a due YouTube Shorts post with platformSpecificData built from platformSettings", async () => {
@@ -166,15 +223,14 @@ describe("runPublishScheduledCron — Zernio publish phase (TikTok/YouTube)", ()
 
     await tick(NOW);
 
-    expect(h.zernio.createZernioPost).toHaveBeenCalledWith(
-      "zernio-key",
-      expect.objectContaining({
-        platform: "youtube",
-        accountId: "zernio_youtube_1",
-        youtubeSpecificData: { title: "Um Reels sobre inglês", visibility: "public", madeForKids: false },
-      }),
-      "sp-yt_1-0"
-    );
+    const [, params, idempotencyKey] = h.zernio.createZernioPost.mock.calls[0];
+    expect(idempotencyKey).toMatch(UUID_REGEX);
+    expect(params).toMatchObject({
+      platform: "youtube",
+      accountId: "zernio_youtube_1",
+      youtubeSpecificData: { title: "Um Reels sobre inglês", visibility: "public", madeForKids: false },
+      metadata: { scheduledPostId: "yt_1", claimKey: idempotencyKey },
+    });
     const row = h.rows.get("yt_1")!;
     expect(row.status).toBe("PUBLISHED");
     expect(row.permalink).toBe("https://youtube.com/shorts/abc");
@@ -213,8 +269,14 @@ describe("runPublishScheduledCron — Zernio publish phase (TikTok/YouTube)", ()
   });
 
   it("fails immediately (no retry) on an explicit 4xx from Zernio's POST /posts", async () => {
+    // Rodada 5, achado 1: the REAL ZernioApiError, not a fake `MetaApiError`
+    // that could set `httpStatus` correctly regardless of whether the real
+    // constructor did. This is the actual regression test for the bug (the
+    // constructor used to leave `httpStatus` at 0, so this exact scenario
+    // was never recognized as an explicit 4xx and the row got stuck in
+    // PUBLISHING instead of failing here).
     seed(tiktokPost());
-    h.zernio.createZernioPost.mockRejectedValue(new h.meta.MetaApiError("rejected", 422));
+    h.zernio.createZernioPost.mockRejectedValue(new ZernioApiError(422));
 
     const result = await tick(NOW);
 
@@ -249,11 +311,11 @@ describe("runPublishScheduledCron — Zernio publish phase (TikTok/YouTube)", ()
     expect((result as { failed: number }).failed).toBe(1);
   });
 
-  it("caps Zernio publishing at 10 posts per tick, same as the Instagram publish phase", async () => {
+  it("caps Zernio publishing at 3 posts per tick (achado 4) — a slow/240s createZernioPost call must never balloon a tick", async () => {
     // Unlike Instagram's prepare phase (a 15-minute look-ahead window), Zernio
     // publishing has no "prepare" step — only rows already due (scheduledFor
     // <= now) qualify, so every seeded post must be at or before `now`.
-    const posts = Array.from({ length: 12 }, (_, i) =>
+    const posts = Array.from({ length: 5 }, (_, i) =>
       tiktokPost({ id: `tk_${i}`, scheduledFor: new Date(NOW.getTime() - i * 1000) })
     );
     seed(...posts);
@@ -261,7 +323,7 @@ describe("runPublishScheduledCron — Zernio publish phase (TikTok/YouTube)", ()
 
     await tick(NOW);
 
-    expect(h.zernio.createZernioPost).toHaveBeenCalledTimes(10);
+    expect(h.zernio.createZernioPost).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -349,6 +411,73 @@ describe("runPublishScheduledCron — Zernio reconciliation (TikTok/YouTube)", (
     expect(h.rows.get("tk_1")?.zernioPostId).toBeNull();
   });
 
+  it("matches FIRST by metadata.scheduledPostId, even when content/media would NOT match the fallback heuristic (achado 3)", async () => {
+    seed(tiktokPost({ status: "PUBLISHING", zernioPostId: null, claimedAt: NOW, updatedAt: NOW }));
+    h.zernio.listZernioPosts.mockResolvedValue([
+      {
+        _id: "zp_meta",
+        status: "published",
+        content: "uma legenda totalmente diferente", // would NOT match the content+media heuristic
+        mediaItems: [{ type: "video", url: "https://outro-dominio.example/video.mp4" }],
+        createdAt: NOW.toISOString(),
+        metadata: { scheduledPostId: "tk_1", claimKey: "whatever" },
+        platforms: [
+          { platform: "tiktok", status: "published", platformPostId: "tt_meta", platformPostUrl: "https://tiktok.com/@conta/video/meta", errorMessage: null },
+        ],
+      },
+    ]);
+
+    const result = await tick(new Date(NOW.getTime() + 30_000));
+
+    const row = h.rows.get("tk_1")!;
+    expect(row.status).toBe("PUBLISHED");
+    expect(row.zernioPostId).toBe("zp_meta");
+    expect(row.permalink).toBe("https://tiktok.com/@conta/video/meta");
+    expect((result as { reconciled: number }).reconciled).toBe(1);
+  });
+
+  it("uses claimedAt, not updatedAt, for the window and the list's fromDate (achado 3) — matters on a FAILED row, whose updatedAt is the failure moment, not the claim moment", async () => {
+    const claimedAt = NOW;
+    const failureMoment = new Date(NOW.getTime() + 40 * 60_000); // 40 min later
+    const post = tiktokPost({ status: "FAILED", zernioPostId: null, claimedAt, updatedAt: failureMoment });
+    seed(post);
+
+    h.zernio.listZernioPosts.mockResolvedValue([
+      {
+        _id: "zp_found",
+        status: "published",
+        content: "Legenda TikTok",
+        mediaItems: [{ type: "video", url: "https://media.local/video.mp4" }],
+        // Created right after the CLAIM, well before the failure moment — an
+        // `updatedAt`-based window (updatedAt - 2min, i.e. ~38 minutes after
+        // this) would have wrongly excluded this exact candidate.
+        createdAt: new Date(claimedAt.getTime() + 60_000).toISOString(),
+        platforms: [
+          { platform: "tiktok", status: "published", platformPostId: "tt_x", platformPostUrl: "https://tiktok.com/@conta/video/x", errorMessage: null },
+        ],
+      },
+    ]);
+
+    const outcome = await reconcileZernioByList(
+      h.prisma as unknown as Parameters<typeof reconcileZernioByList>[0],
+      post as unknown as Parameters<typeof reconcileZernioByList>[1],
+      "zernio-key",
+      new Date(failureMoment.getTime() + 60_000),
+      emptyResult(),
+      "FAILED"
+    );
+
+    expect(outcome).toBe("published");
+    expect(h.zernio.listZernioPosts).toHaveBeenCalledWith(
+      "zernio-key",
+      expect.objectContaining({
+        accountId: "zernio_tiktok_1",
+        fromDate: new Date(claimedAt.getTime() - 5 * 60_000),
+      })
+    );
+    expect(h.rows.get("tk_1")?.zernioPostId).toBe("zp_found");
+  });
+
   it("escalates to FAILED+outcomeUncertain once a zernioPostId-less row has been stuck 30+ minutes with no list match", async () => {
     seed(tiktokPost({ status: "PUBLISHING", zernioPostId: null, updatedAt: NOW }));
     h.zernio.listZernioPosts.mockResolvedValue([]);
@@ -371,6 +500,36 @@ describe("runPublishScheduledCron — Zernio reconciliation (TikTok/YouTube)", (
     expect(row.status).toBe("FAILED");
     expect(row.outcomeUncertain).toBe(true);
     expect((result as { failed: number }).failed).toBe(1);
+  });
+});
+
+describe("runPublishScheduledCron — Zernio reconciliation without ZERNIO_API_KEY (achado 8)", () => {
+  it("still escalates a PUBLISHING row to FAILED+outcomeUncertain after 30+ minutes, even with no API key at all", async () => {
+    // Rodada 5, achado 8: an early `return` at the top of
+    // reconcileZernioPublishing used to skip the WHOLE loop whenever
+    // ZERNIO_API_KEY was missing — this row would have stayed PUBLISHING
+    // forever before the fix, despite the old code's own comment claiming
+    // STUCK_POLLING_THRESHOLD_MS "still eventually escalates" it.
+    h.getZernioApiKey.mockReturnValue(null);
+    seed(tiktokPost({ status: "PUBLISHING", zernioPostId: "zp_1", updatedAt: NOW }));
+
+    const result = await tick(new Date(NOW.getTime() + 31 * 60_000));
+
+    const row = h.rows.get("tk_1")!;
+    expect(row.status).toBe("FAILED");
+    expect(row.outcomeUncertain).toBe(true);
+    expect((result as { failed: number }).failed).toBe(1);
+    expect(h.sendZernioPublishFailureAlert).toHaveBeenCalledTimes(1);
+    expect(h.zernio.getZernioPost).not.toHaveBeenCalled();
+  });
+
+  it("does NOT escalate a PUBLISHING row before the 30-minute threshold, even with no API key", async () => {
+    h.getZernioApiKey.mockReturnValue(null);
+    seed(tiktokPost({ status: "PUBLISHING", zernioPostId: "zp_1", updatedAt: NOW }));
+
+    await tick(new Date(NOW.getTime() + 5 * 60_000));
+
+    expect(h.rows.get("tk_1")?.status).toBe("PUBLISHING");
   });
 });
 
@@ -421,5 +580,67 @@ describe("runPublishScheduledCron — shared-file cleanup across platforms (Fase
     expect(igRow.storagePaths).toEqual([]);
     const tkRow = h.rows.get("tk_tomorrow")!;
     expect(tkRow.storagePaths).toEqual(["shared0123456789ab-xxxxxx.mp4"]);
+  });
+});
+
+describe("runPublishScheduledCron — backfillMissingZernioPermalinks (achado 7)", () => {
+  it("fills in a TikTok/YouTube permalink still missing after publish, via GET /posts/{id}", async () => {
+    seed(
+      tiktokPost({
+        id: "tk_published",
+        status: "PUBLISHED",
+        zernioPostId: "zp_done",
+        permalink: null,
+        publishedAt: new Date(NOW.getTime() - 60 * 60_000), // 1h ago, within the 24h window
+        updatedAt: new Date(NOW.getTime() - 60 * 60_000),
+      })
+    );
+    h.zernio.getZernioPost.mockResolvedValue(
+      zernioPost({
+        platforms: [
+          { platform: "tiktok", status: "published", platformPostId: "tt_1", platformPostUrl: "https://tiktok.com/@conta/video/1", errorMessage: null },
+        ],
+      })
+    );
+
+    await tick(NOW);
+
+    expect(h.zernio.getZernioPost).toHaveBeenCalledWith("zernio-key", "zp_done");
+    expect(h.rows.get("tk_published")?.permalink).toBe("https://tiktok.com/@conta/video/1");
+  });
+
+  it("does not touch a row whose publishedAt is older than 24h", async () => {
+    seed(
+      tiktokPost({
+        id: "tk_old",
+        status: "PUBLISHED",
+        zernioPostId: "zp_old",
+        permalink: null,
+        publishedAt: new Date(NOW.getTime() - 25 * 60 * 60_000),
+        updatedAt: new Date(NOW.getTime() - 25 * 60 * 60_000),
+      })
+    );
+
+    await tick(NOW);
+
+    expect(h.zernio.getZernioPost).not.toHaveBeenCalled();
+    expect(h.rows.get("tk_old")?.permalink).toBeNull();
+  });
+
+  it("does nothing when ZERNIO_API_KEY is missing, without throwing", async () => {
+    h.getZernioApiKey.mockReturnValue(null);
+    seed(
+      tiktokPost({
+        id: "tk_published",
+        status: "PUBLISHED",
+        zernioPostId: "zp_done",
+        permalink: null,
+        publishedAt: new Date(NOW.getTime() - 60 * 60_000),
+        updatedAt: new Date(NOW.getTime() - 60 * 60_000),
+      })
+    );
+
+    await expect(tick(NOW)).resolves.toBeTruthy();
+    expect(h.zernio.getZernioPost).not.toHaveBeenCalled();
   });
 });

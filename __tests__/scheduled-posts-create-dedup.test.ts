@@ -163,7 +163,13 @@ describe("POST /api/scheduled-posts — permanent dedup (bloqueador 3)", () => {
         scheduledFor: FUTURE,
         username: "conta",
         platform: "TIKTOK",
-        tiktokSettings: { privacyLevel: "PUBLIC_TO_EVERYONE", consentGiven: true },
+        tiktokSettings: {
+          privacyLevel: "PUBLIC_TO_EVERYONE",
+          allowComment: false,
+          allowDuet: false,
+          allowStitch: false,
+          consentGiven: true,
+        },
       })
     );
 

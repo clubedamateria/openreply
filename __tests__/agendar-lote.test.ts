@@ -10,6 +10,7 @@ import {
   validateYoutubeInfantilArgOrThrow,
   validateDestinosOrThrow,
   main,
+  isMainModule,
   type Args,
   type PostPlan,
 } from "../scripts/agendar-lote";
@@ -47,49 +48,121 @@ describe("parseDestinos", () => {
   });
 });
 
+const TIKTOK_INTERACTIONS_SIM = {
+  "tiktok-comentarios": "sim",
+  "tiktok-dueto": "sim",
+  "tiktok-costura": "sim",
+} as const;
+
 describe("buildTiktokSettings", () => {
   it("throws when --tiktok-privacidade is missing", () => {
-    expect(() => buildTiktokSettings(args({ "tiktok-consentimento": true }))).toThrow(
-      /--tiktok-privacidade é obrigatório/
-    );
+    expect(() =>
+      buildTiktokSettings(args({ "tiktok-consentimento": true, ...TIKTOK_INTERACTIONS_SIM }))
+    ).toThrow(/--tiktok-privacidade é obrigatório/);
   });
 
   it("throws when --tiktok-privacidade isn't one of TikTok's own values", () => {
     expect(() =>
-      buildTiktokSettings(args({ "tiktok-privacidade": "EVERYONE", "tiktok-consentimento": true }))
+      buildTiktokSettings(
+        args({ "tiktok-privacidade": "EVERYONE", "tiktok-consentimento": true, ...TIKTOK_INTERACTIONS_SIM })
+      )
     ).toThrow(/--tiktok-privacidade/);
   });
 
   it("throws when --tiktok-consentimento is absent, explaining why", () => {
     expect(() =>
-      buildTiktokSettings(args({ "tiktok-privacidade": "PUBLIC_TO_EVERYONE" }))
+      buildTiktokSettings(args({ "tiktok-privacidade": "PUBLIC_TO_EVERYONE", ...TIKTOK_INTERACTIONS_SIM }))
     ).toThrow(/tiktok-consentimento.*Music Usage Confirmation/);
   });
 
-  it("builds valid settings, defaulting duet/stitch to allowed", () => {
+  it('rodada 5, achado 6: throws when --tiktok-consentimento is exactly "nao" — only the bare flag or "sim" count', () => {
+    expect(() =>
+      buildTiktokSettings(
+        args({
+          "tiktok-privacidade": "PUBLIC_TO_EVERYONE",
+          "tiktok-consentimento": "nao",
+          ...TIKTOK_INTERACTIONS_SIM,
+        })
+      )
+    ).toThrow(/tiktok-consentimento só aceita/);
+  });
+
+  it("accepts --tiktok-consentimento as a bare flag", () => {
     const settings = buildTiktokSettings(
-      args({ "tiktok-privacidade": "public_to_everyone", "tiktok-consentimento": true })
+      args({ "tiktok-privacidade": "public_to_everyone", "tiktok-consentimento": true, ...TIKTOK_INTERACTIONS_SIM })
+    );
+    expect(settings.consentGiven).toBe(true);
+  });
+
+  it('accepts --tiktok-consentimento exactly "sim"', () => {
+    const settings = buildTiktokSettings(
+      args({ "tiktok-privacidade": "public_to_everyone", "tiktok-consentimento": "sim", ...TIKTOK_INTERACTIONS_SIM })
+    );
+    expect(settings.consentGiven).toBe(true);
+  });
+
+  it("rodada 5, achado 5: throws when --tiktok-comentarios/--tiktok-dueto/--tiktok-costura are missing — no default allowed", () => {
+    expect(() =>
+      buildTiktokSettings(args({ "tiktok-privacidade": "PUBLIC_TO_EVERYONE", "tiktok-consentimento": true }))
+    ).toThrow(/--tiktok-comentarios é obrigatório/);
+  });
+
+  it("builds valid settings from explicit sim/nao flags for every interaction", () => {
+    const settings = buildTiktokSettings(
+      args({
+        "tiktok-privacidade": "public_to_everyone",
+        "tiktok-consentimento": true,
+        "tiktok-comentarios": "sim",
+        "tiktok-dueto": "nao",
+        "tiktok-costura": "nao",
+      })
     );
     expect(settings).toEqual({
       privacyLevel: "PUBLIC_TO_EVERYONE",
       allowComment: true,
-      allowDuet: true,
-      allowStitch: true,
+      allowDuet: false,
+      allowStitch: false,
       consentGiven: true,
     });
   });
+});
 
-  it("honors --tiktok-sem-dueto/--tiktok-sem-costura opt-outs", () => {
-    const settings = buildTiktokSettings(
-      args({
-        "tiktok-privacidade": "PUBLIC_TO_EVERYONE",
-        "tiktok-consentimento": true,
-        "tiktok-sem-dueto": true,
-        "tiktok-sem-costura": true,
-      })
-    );
-    expect(settings.allowDuet).toBe(false);
-    expect(settings.allowStitch).toBe(false);
+describe("isMainModule (rodada 5, achado 11)", () => {
+  const REAL_SCRIPT_PATH = path.resolve(process.cwd(), "scripts", "agendar-lote.ts");
+  let originalArgv1: string | undefined;
+
+  beforeEach(() => {
+    originalArgv1 = process.argv[1];
+  });
+  afterEach(() => {
+    process.argv[1] = originalArgv1 as string;
+  });
+
+  it("returns true when argv[1] is the real script path", () => {
+    process.argv[1] = REAL_SCRIPT_PATH;
+    expect(isMainModule()).toBe(true);
+  });
+
+  it("returns true when argv[1] is a SYMLINK to the real script path — the old `import.meta.url === file://${argv[1]}` comparison stayed silent here, since argv[1] is the symlink's own path, never equal to the real module URL Node resolves", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agendar-lote-symlink-"));
+    const symlinkPath = path.join(tmpDir, "agendar-lote-link.ts");
+    fs.symlinkSync(REAL_SCRIPT_PATH, symlinkPath);
+    try {
+      process.argv[1] = symlinkPath;
+      expect(isMainModule()).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns false for an unrelated path", () => {
+    process.argv[1] = "/tmp/not-the-script.ts";
+    expect(isMainModule()).toBe(false);
+  });
+
+  it("returns false (never throws) when argv[1] doesn't exist on disk at all", () => {
+    process.argv[1] = "/tmp/agendar-lote-does-not-exist-xyz.ts";
+    expect(isMainModule()).toBe(false);
   });
 });
 
@@ -223,6 +296,12 @@ describe("main() — dry-run grid shows every destination, touches neither netwo
       "--tiktok-privacidade",
       "PUBLIC_TO_EVERYONE",
       "--tiktok-consentimento",
+      "--tiktok-comentarios",
+      "sim",
+      "--tiktok-dueto",
+      "sim",
+      "--tiktok-costura",
+      "sim",
       "--dry-run",
     ];
 
@@ -321,6 +400,12 @@ describe("main() — per-destination dedup skip (Fase 4)", () => {
       "--tiktok-privacidade",
       "PUBLIC_TO_EVERYONE",
       "--tiktok-consentimento",
+      "--tiktok-comentarios",
+      "sim",
+      "--tiktok-dueto",
+      "sim",
+      "--tiktok-costura",
+      "sim",
     ];
 
     await main();

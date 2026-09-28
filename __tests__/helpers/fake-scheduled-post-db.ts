@@ -102,11 +102,30 @@ export function createFakeScheduledPostDb() {
     }
   });
 
+  // Rodada 5, achado 1: matches the REAL MetaApiError's 5-arg constructor
+  // (lib/meta/client.ts) — `code, subcode, fbTraceId, message, httpStatus`.
+  // This matters because the real `ZernioApiError` (lib/zernio/client.ts)
+  // extends `MetaApiError`, and `scheduled-posts-zernio-engine.test.ts` keeps
+  // that real class (via `importOriginal`) while this module still stands in
+  // for `@/lib/meta/client` — so the real `ZernioApiError`'s own `super(...)`
+  // call chains up to THIS fake, and needs the same shape to work correctly.
   class MetaApiError extends Error {
+    code: number;
+    subcode: number | undefined;
+    fbTraceId: string | undefined;
     httpStatus: number;
-    constructor(message: string, httpStatus = 0) {
+    constructor(
+      code: number,
+      subcode: number | undefined,
+      fbTraceId: string | undefined,
+      message: string,
+      httpStatus = 0
+    ) {
       super(message);
       this.name = "MetaApiError";
+      this.code = code;
+      this.subcode = subcode;
+      this.fbTraceId = fbTraceId;
       this.httpStatus = httpStatus;
     }
   }
@@ -155,10 +174,11 @@ export function createFakeScheduledPostDb() {
   type FakeZernioPost = {
     _id: string;
     status: string;
-    platforms: FakeZernioPostPlatform[];
+    platforms?: FakeZernioPostPlatform[];
     content?: string;
     mediaItems?: { type?: string; url?: string }[];
     createdAt?: string;
+    metadata?: Record<string, string>;
   };
   const zernio = {
     createZernioPost: vi.fn<(...args: unknown[]) => Promise<FakeZernioPost>>(),

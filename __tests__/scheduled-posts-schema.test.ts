@@ -198,16 +198,31 @@ describe("createScheduledPostSchema — Fase 4 (TIKTOK/YOUTUBE via Zernio)", () 
     expect(result.success).toBe(false);
   });
 
-  it("accepts a valid TikTok payload, defaulting allowComment/allowDuet/allowStitch to true", () => {
-    const result = createScheduledPostSchema.parse({
+  it("rejects a TikTok payload missing allowComment/allowDuet/allowStitch — rodada 5, achado 5: TikTok forbids a default value on these", () => {
+    const result = createScheduledPostSchema.safeParse({
       ...validBase,
       platform: "TIKTOK",
       tiktokSettings: { privacyLevel: "SELF_ONLY", consentGiven: true },
     });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a valid TikTok payload with every interaction flag sent explicitly (no default)", () => {
+    const result = createScheduledPostSchema.parse({
+      ...validBase,
+      platform: "TIKTOK",
+      tiktokSettings: {
+        privacyLevel: "SELF_ONLY",
+        allowComment: false,
+        allowDuet: false,
+        allowStitch: true,
+        consentGiven: true,
+      },
+    });
     expect(result.tiktokSettings).toMatchObject({
       privacyLevel: "SELF_ONLY",
-      allowComment: true,
-      allowDuet: true,
+      allowComment: false,
+      allowDuet: false,
       allowStitch: true,
       consentGiven: true,
     });

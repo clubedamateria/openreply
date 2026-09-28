@@ -676,5 +676,6 @@ export {
   buildYoutubeSettings,
   validateDestinosOrThrow,
   validatePlansOrThrow,
+  isMainModule,
 };
 export type { Args, Platform, PostPlan };
