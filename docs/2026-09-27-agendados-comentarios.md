@@ -424,3 +424,25 @@ integração real de `main()` provando que só o destino faltante é agendado qu
 outro já existe). `scripts/agendar-lote.ts` ganhou um guarda
 `import.meta.url === file://process.argv[1]` pra só rodar `main()` quando chamado
 direto — sem isso, importar o módulo num teste dispararia o CLI de verdade.
+
+## Retomada (pausa em 2026-09-28)
+
+**Estado:** a produção está no commit 1a393b7 (Instagram: Agendados + Comentários). A Fase 4 (TikTok/YouTube via Zernio, commits f92f60e..e859b82) está SÓ LOCAL, sem push. A migration `20260928120000_zernio_platforms` não foi aplicada em lugar nenhum, então ainda pode ser editada no lugar.
+
+**Feito por último:** a revisão adversarial da Fase 4 deu "pode subir, sem bloqueador", com 5 itens "corrigir logo" e 6 menores. A rodada 5 de correção começou e foi pausada. O commit 4a4b115 fez o item 1 e parte do item 4, sem teste.
+
+**Falta (rodada 5):**
+1. ~~`ZernioApiError` com `httpStatus`~~ (feito). Falta o teste com a classe real (o teste atual usa um `MetaApiError` falso, em `__tests__/scheduled-posts-zernio-engine.test.ts:217`).
+2. Chave de idempotência: criar a coluna `zernioIdempotencyKey` com `randomUUID()` na mesma escrita condicional que reivindica o post, e zerar a coluna no retry e no reagendar. Usar `zpost.platforms ?? []`: resposta sem a plataforma conta como pendente.
+3. Mandar `metadata {scheduledPostId, claimKey}` no POST e casar primeiro por ela. Criar a coluna `claimedAt` para a janela do fallback (hoje usa `updatedAt`). Na listagem: `fromDate = claimedAt - 5min` e só a plataforma certa, sem `?? platforms[0]`.
+4. Ligar `ZERNIO_CREATE_POST_TIMEOUT_MS` (240 s) no `createZernioPost`, subir o wget do `publish-scheduled` para 600 s em `scripts/cron.sh`, publicar no máximo 3 posts do Zernio por minuto e processar o Instagram antes do Zernio.
+5. TikTok: interações começando desmarcadas, schema sem `.default(true)`, CLI com `--tiktok-comentarios|dueto|costura sim|nao` obrigatórios. Consultar o creator-info, se o Zernio tiver.
+6. O CLI só aceita `--tiktok-consentimento` sem valor ou `sim`.
+7. Preencher o link do TikTok e do YouTube (`getZernioPost`, 24 h, no máximo 5 por tick).
+8. Sem `ZERNIO_API_KEY`: posts em PUBLISHING há mais de 30 min viram FAILED incerto, com alerta.
+9. Validar `?platform=` e responder 400.
+11. Guarda do main do CLI com `realpathSync`.
+
+Depois: typecheck, lint e test verdes → `git push origin deploy` → o dono roda `bash .tmp/publicar-fase4.sh` (backup, 3 chaves ZERNIO_* copiadas do vault para a VM, pull, teste da migration numa cópia, up, conferência). Esse arquivo está fora do git.
+
+**Esperando o dono:** teste do "Estou..." no YouTube (público, privado ou não testar) e o ritmo dos 30 Reels do quiz (IG + TikTok + YT, sem a lista-01; mostrar o `--dry-run` antes).
