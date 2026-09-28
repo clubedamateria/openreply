@@ -422,13 +422,38 @@ describe("runPublishScheduledCron — disk cleanup", () => {
   it("deletes orphan files older than 48h that no active post references", async () => {
     seed();
     h.listMediaFiles.mockResolvedValue([
-      { filename: "orphan-old.mp4", mtimeMs: NOW.getTime() - 49 * 60 * 60 * 1000 },
-      { filename: "orphan-new.mp4", mtimeMs: NOW.getTime() - 1 * 60 * 60 * 1000 },
+      { filename: "orphan-old.mp4", mtimeMs: NOW.getTime() - 49 * 60 * 60 * 1000, isTmp: false },
+      { filename: "orphan-new.mp4", mtimeMs: NOW.getTime() - 1 * 60 * 60 * 1000, isTmp: false },
     ]);
 
     const result = await tick(NOW);
 
     expect(h.deleteMediaFiles).toHaveBeenCalledWith(["orphan-old.mp4"]);
+    expect((result as { orphansDeleted: number }).orphansDeleted).toBe(1);
+  });
+
+  it("Rodada 3, achado 4: never sweeps a file a PREPARING/PUBLISHING/FAILED/PUBLISHED post still references, however old the file is on disk", async () => {
+    seed(scheduledPost({ id: "post_1", status: "PUBLISHING", storagePaths: ["still-used.mp4"] }));
+    h.listMediaFiles.mockResolvedValue([
+      { filename: "still-used.mp4", mtimeMs: NOW.getTime() - 500 * 60 * 60 * 1000, isTmp: false },
+    ]);
+
+    const result = await tick(NOW);
+
+    expect(h.deleteMediaFiles).not.toHaveBeenCalled();
+    expect((result as { orphansDeleted: number }).orphansDeleted).toBe(0);
+  });
+
+  it("Rodada 3, achado 10: sweeps a leftover .tmp-* upload after 1h, well before the 48h orphan rule", async () => {
+    seed();
+    h.listMediaFiles.mockResolvedValue([
+      { filename: ".tmp-abandoned", mtimeMs: NOW.getTime() - 2 * 60 * 60 * 1000, isTmp: true },
+      { filename: ".tmp-recent", mtimeMs: NOW.getTime() - 5 * 60 * 1000, isTmp: true },
+    ]);
+
+    const result = await tick(NOW);
+
+    expect(h.deleteMediaFiles).toHaveBeenCalledWith([".tmp-abandoned"]);
     expect((result as { orphansDeleted: number }).orphansDeleted).toBe(1);
   });
 });

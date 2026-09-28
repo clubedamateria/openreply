@@ -72,9 +72,18 @@ export async function deleteMediaFiles(filenames: string[]): Promise<void> {
 export interface MediaFileStat {
   filename: string;
   mtimeMs: number;
+  /** Uploads in flight write to a `.tmp-*` name before the atomic rename —
+   * never treat one of those as an orphan by the same 48h rule as a finished
+   * upload (a slow upload from a bad connection can legitimately take a
+   * while), but a `.tmp-*` file can also never be referenced by any
+   * ScheduledPost row (rows only ever get the final, renamed name), so a
+   * leftover one — an upload that crashed or was abandoned — is swept much
+   * sooner. See TMP_FILE_MAX_AGE_MS in lib/scheduled-posts/engine.ts. */
+  isTmp: boolean;
 }
 
-/** All files currently on disk, for the orphan-cleanup sweep. */
+/** All files currently on disk, for the orphan-cleanup sweep (both the
+ * regular 48h-unreferenced rule and the shorter `.tmp-*` sweep). */
 export async function listMediaFiles(): Promise<MediaFileStat[]> {
   const dir = getMediaDir();
   let entries: string[];
@@ -86,18 +95,14 @@ export async function listMediaFiles(): Promise<MediaFileStat[]> {
   }
 
   const stats = await Promise.all(
-    entries
-      // Uploads in flight write to a `.tmp-*` name before the atomic rename;
-      // never treat one of those as an orphan mid-upload.
-      .filter((name) => !name.startsWith(".tmp-"))
-      .map(async (filename) => {
-        try {
-          const stat = await fs.stat(path.join(dir, filename));
-          return { filename, mtimeMs: stat.mtimeMs };
-        } catch {
-          return null;
-        }
-      })
+    entries.map(async (filename) => {
+      try {
+        const stat = await fs.stat(path.join(dir, filename));
+        return { filename, mtimeMs: stat.mtimeMs, isTmp: filename.startsWith(".tmp-") };
+      } catch {
+        return null;
+      }
+    })
   );
 
   return stats.filter((s): s is MediaFileStat => s !== null);

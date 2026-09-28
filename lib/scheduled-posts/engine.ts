@@ -15,7 +15,7 @@ import {
 } from "@/lib/meta/client";
 import { deleteMediaFiles, listMediaFiles } from "@/lib/storage/media";
 import { sendPublishFailureAlert, sendPublishWarningAlert } from "@/lib/email/alert";
-import { withAdvisoryLock, type LockResult } from "@/lib/scheduled-posts/advisory-lock";
+import { withAdvisoryLock, type LockHandle, type LockResult } from "@/lib/scheduled-posts/advisory-lock";
 import type {
   InstagramProvider,
   PrismaClient,
@@ -31,11 +31,16 @@ import type { Prisma } from "@/app/generated/prisma/client";
  * double-publish-safety rules implemented here.
  *
  * Every state transition goes through a conditional `updateMany({ where: {
- * id, status: <expected>, containerId: <expected> } })`, checking
- * `count === 1`. That — plus never calling a one-way Meta endpoint
- * (media_publish) twice for the same containerId — is what makes this safe
- * against two overlapping cron ticks, a crash mid-tick, or a lost HTTP
- * response from Meta.
+ * id, status: <exact status this call observed>, containerId: <containerId
+ * this call observed> } })`, checking `count === 1`. That — plus never
+ * calling a one-way Meta endpoint (media_publish) twice for the same
+ * containerId — is what makes this safe against two overlapping cron ticks,
+ * a crash mid-tick, or a lost HTTP response from Meta. The status match is
+ * intentionally exact (not `{ in: [...] }`): each call site knows precisely
+ * what status its own row transition just put (or found) the row in, and
+ * matching anything looser would let a stale caller "succeed" at writing
+ * over a state a different, newer tick already moved the row past (Rodada 3,
+ * achado 2 — see reconcileStuckPublishing below for the scenario this closes).
  */
 
 // Every phase takes the Prisma client as a parameter (rather than importing
@@ -68,11 +73,22 @@ const CLEANUP_PUBLISHED_AFTER_MS = 24 * 60 * 60 * 1000;
 // FAILED/CANCELED posts keep their files a week, in case someone wants to
 // inspect or reschedule with the same upload.
 const CLEANUP_FAILED_OR_CANCELED_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
-// A file on disk that no SCHEDULED/PREPARING/PUBLISHING post references
+// A file on disk that no ScheduledPost row (of any status) references
 // (upload that was never turned into a post, or left behind by a bug) is
 // swept after this long — long enough that an upload in progress from the
 // panel is never at risk.
 const ORPHAN_FILE_AFTER_MS = 48 * 60 * 60 * 1000;
+// A `.tmp-*` file (an upload that never completed — the process was killed
+// mid-stream, or the client hung up) is swept much sooner: it can never be
+// referenced by any row (rows only ever get the final, renamed filename), so
+// there is no post whose retention it needs to outlive.
+const TMP_FILE_MAX_AGE_MS = 60 * 60 * 1000;
+// Rodada 3, achado 6: a container's status_code coming back PUBLISHED is
+// matched to a `listRecentMedia` item only if that item's own timestamp is
+// no older than this many minutes before the row was claimed into
+// PUBLISHING — without this, an unrelated older post with the same (or an
+// empty) caption could be mismatched.
+const RECONCILE_MATCH_SLACK_MS = 2 * 60 * 1000;
 // Per-tick caps (bloqueador 11): the rest waits for next minute rather than
 // letting one slow tick balloon.
 const MAX_PREPARE_PER_TICK = 10;
@@ -91,6 +107,28 @@ function isExplicit4xxMetaError(err: unknown): boolean {
   );
 }
 
+/**
+ * Rodada 3, achado 2: thrown when a phase notices (via `lock.isHeld()`)
+ * that the advisory-lock connection dropped mid-tick, right before it would
+ * otherwise call a one-way Meta endpoint (media_publish) or create a new
+ * container. Caught once, at the top of `runPublishScheduledCron` — the
+ * safest thing to do on a lost lock is stop touching anything else this
+ * tick, since another process may already be running with the lock by now.
+ */
+class LockLostError extends Error {
+  constructor() {
+    super("advisory lock lost mid-tick");
+  }
+}
+
+/** Tolerates a `withAdvisoryLock` test double that (unlike the real
+ * implementation) doesn't pass a lock handle to its callback — treated as
+ * "assume still held", since those tests are specifically about proving
+ * per-statement guards are safe even without any lock at all. */
+function asLockHandle(lock: LockHandle | undefined): LockHandle {
+  return lock && typeof lock.isHeld === "function" ? lock : { isHeld: () => true };
+}
+
 export interface PublishScheduledResult {
   prepared: number;
   published: number;
@@ -101,7 +139,7 @@ export interface PublishScheduledResult {
   orphansDeleted: number;
 }
 
-function emptyResult(): PublishScheduledResult {
+export function emptyResult(): PublishScheduledResult {
   return {
     prepared: 0,
     published: 0,
@@ -122,7 +160,7 @@ interface AccountForPublish {
   username: string;
 }
 
-interface PostForPublish {
+export interface PostForPublish {
   id: string;
   workspaceId: string;
   mediaType: ScheduledPostMediaType;
@@ -181,16 +219,32 @@ async function createContainerForPost(
   return { containerId: parent.id, childContainerIds };
 }
 
+/**
+ * Marks a post FAILED — but only if it is still exactly where this caller
+ * last saw it (`fromStatus` + the containerId this caller read). A stale
+ * caller (a tick that read the row long ago and is only now getting around
+ * to failing it) silently no-ops instead of clobbering a status/containerId
+ * a newer tick already moved the row to (Rodada 3, achado 2/R4).
+ *
+ * `outcomeUncertain` records that we genuinely do not know whether Meta
+ * ended up publishing this content before we gave up — set only when a
+ * media_publish call (or a row already in PUBLISHING) could not be
+ * confirmed one way or the other. The retry/reschedule endpoint
+ * (app/api/scheduled-posts/[id]/route.ts) uses this to refuse a blind retry
+ * of a post that might already be live (Rodada 3, achado 1).
+ */
 async function markFailed(
   tx: Db,
   post: PostForPublish,
   message: string,
   attempts: number,
-  result: PublishScheduledResult
+  result: PublishScheduledResult,
+  fromStatus: ScheduledPostStatus,
+  outcomeUncertain = false
 ): Promise<void> {
   const updated = await tx.scheduledPost.updateMany({
-    where: { id: post.id, status: { in: ["PREPARING", "PUBLISHING"] } },
-    data: { status: "FAILED", errorMessage: message, attempts },
+    where: { id: post.id, status: fromStatus, containerId: post.containerId },
+    data: { status: "FAILED", errorMessage: message, attempts, outcomeUncertain },
   });
   if (updated.count === 0) return;
 
@@ -214,7 +268,8 @@ async function markFailed(
 async function decryptOrFail(
   tx: Db,
   post: PostForPublish,
-  result: PublishScheduledResult
+  result: PublishScheduledResult,
+  fromStatus: ScheduledPostStatus
 ): Promise<string | null> {
   try {
     return decryptToken(post.instagramAccount.accessToken);
@@ -225,7 +280,8 @@ async function decryptOrFail(
       post,
       `Token de acesso corrompido ou não decifrável: ${message}`,
       post.attempts + 1,
-      result
+      result,
+      fromStatus
     );
     return null;
   }
@@ -237,23 +293,36 @@ async function decryptOrFail(
  * containerId, reset child ids) and keeps the post in PREPARING for the next
  * tick to poll — unless attempts are exhausted, in which case it goes
  * straight to FAILED.
+ *
+ * Every caller reaches this function with the row still in PREPARING (see
+ * call sites in prepareDuePosts/publishReadyPosts) — `fromStatus` for its own
+ * guarded writes is hardcoded to "PREPARING" for that reason, not threaded
+ * in as a parameter.
  */
 async function handleContainerFailure(
   tx: Db,
   post: PostForPublish,
   err: unknown,
-  result: PublishScheduledResult
+  result: PublishScheduledResult,
+  lock: LockHandle
 ): Promise<void> {
   const message = err instanceof Error ? err.message : String(err);
   const attempts = post.attempts + 1;
 
   if (attempts >= MAX_ATTEMPTS) {
-    await markFailed(tx, post, message, attempts, result);
+    await markFailed(tx, post, message, attempts, result, "PREPARING");
     return;
   }
 
-  const accessToken = await decryptOrFail(tx, post, result);
+  const accessToken = await decryptOrFail(tx, post, result, "PREPARING");
   if (accessToken === null) return;
+
+  if (!lock.isHeld()) {
+    console.warn(
+      `[Agendados] lock consultivo caiu — abortando o resto do tick antes de recriar o container do post ${post.id}`
+    );
+    throw new LockLostError();
+  }
 
   try {
     const created = await createContainerForPost(
@@ -262,7 +331,7 @@ async function handleContainerFailure(
       post
     );
     await tx.scheduledPost.updateMany({
-      where: { id: post.id, status: { in: ["PREPARING", "PUBLISHING"] } },
+      where: { id: post.id, status: "PREPARING", containerId: post.containerId },
       data: {
         status: "PREPARING",
         containerId: created.containerId,
@@ -277,7 +346,7 @@ async function handleContainerFailure(
     // The recreation attempt itself still counts — otherwise a Meta outage
     // would let the same post retry forever instead of eventually failing.
     await tx.scheduledPost.updateMany({
-      where: { id: post.id, status: { in: ["PREPARING", "PUBLISHING"] } },
+      where: { id: post.id, status: "PREPARING", containerId: post.containerId },
       data: {
         status: "PREPARING",
         attempts,
@@ -293,35 +362,69 @@ async function handleContainerFailure(
  * when a previous tick's media_publish call succeeded on Meta's side but its
  * HTTP response was lost (crash, network drop, timeout) before we could
  * write mediaId. Since the content IS already live, this never re-publishes
- * — it only tries to find the resulting media (by matching caption; a
- * timestamp match is implicit since `listRecentMedia` only returns the most
- * recent items) so the panel can show a permalink.
+ * — it only tries to find the resulting media so the panel can show a
+ * permalink.
  *
- * If the match is missing or ambiguous (more than one candidate with the
- * same caption), the post is still marked PUBLISHED — republishing would be
- * far worse than a missing permalink — but with `mediaId: null` and an email
- * alert asking a human to fill it in.
+ * Rodada 3, achado 6: a candidate from `listRecentMedia` only counts if its
+ * own `timestamp` is no older than `post.updatedAt` (the moment this row was
+ * claimed into PUBLISHING) minus a couple of minutes' slack — without that,
+ * an older post that happens to share the same caption (or, if the caption
+ * is empty, just happens to be the most recent upload) could be mismatched,
+ * stealing its mediaId/permalink. A caption match still requires exactly one
+ * candidate in that window; an empty caption never matches by caption at all
+ * — it only accepts a single candidate purely by being the only one in the
+ * window.
+ *
+ * If the match is missing or ambiguous, the post is still marked PUBLISHED
+ * (republishing would be far worse than a missing permalink) but with
+ * `mediaId: null` and an email alert asking a human to fill it in.
+ *
+ * Exported for reuse by the retry/reschedule endpoint
+ * (app/api/scheduled-posts/[id]/route.ts), which runs the exact same
+ * reconciliation before ever allowing a retry of a post whose previous
+ * outcome is uncertain (Rodada 3, achado 1) — `fromStatus` there is
+ * "FAILED" rather than PREPARING/PUBLISHING.
  */
-async function handlePublishedContainer(
+export async function reconcilePublishedContainer(
   tx: Db,
   post: PostForPublish,
   accessToken: string,
   now: Date,
   result: PublishScheduledResult,
-  fromStatus: Extract<ScheduledPostStatus, "PREPARING" | "PUBLISHING">
+  fromStatus: ScheduledPostStatus
 ): Promise<void> {
   let mediaId: string | null = null;
   let permalink: string | null = null;
-  let matchNote = "nenhum candidato em listRecentMedia bateu com a legenda";
+  let matchNote = "nenhum candidato em listRecentMedia dentro da janela de tempo";
+
+  const windowStartMs = post.updatedAt.getTime() - RECONCILE_MATCH_SLACK_MS;
 
   try {
     const recent = await listRecentMedia(accessToken, post.instagramAccount.instagramId, 10);
-    const candidates = recent.filter((m) => (m.caption ?? "") === post.caption);
+    const inWindow = recent.filter((m) => new Date(m.timestamp).getTime() >= windowStartMs);
+
+    let candidates = inWindow;
+    if (post.caption) {
+      candidates = inWindow.filter((m) => (m.caption ?? "") === post.caption);
+      if (candidates.length > 1) {
+        matchNote = `${candidates.length} candidatos bateram com a legenda dentro da janela de tempo — ambíguo demais para confiar`;
+        candidates = [];
+      } else if (candidates.length === 0) {
+        matchNote = "nenhuma mídia recente na janela de tempo bateu com a legenda";
+      }
+    } else if (inWindow.length !== 1) {
+      matchNote =
+        inWindow.length === 0
+          ? "legenda vazia e nenhuma mídia na janela de tempo"
+          : `legenda vazia e ${inWindow.length} mídias na janela de tempo — ambíguo demais para confiar`;
+      candidates = [];
+    }
+    // Empty caption + exactly one candidate in the window: `candidates` is
+    // already `inWindow` (length 1) from the initial assignment above.
+
     if (candidates.length === 1) {
       mediaId = candidates[0].id;
       permalink = candidates[0].permalink ?? null;
-    } else if (candidates.length > 1) {
-      matchNote = `${candidates.length} candidatos bateram com a legenda — ambíguo demais para confiar`;
     }
   } catch (err) {
     matchNote = `listRecentMedia falhou: ${err instanceof Error ? err.message : String(err)}`;
@@ -372,7 +475,12 @@ async function handlePublishedContainer(
 
 // --- Phase 1: prepare -------------------------------------------------------
 
-async function prepareDuePosts(tx: Db, now: Date, result: PublishScheduledResult): Promise<void> {
+async function prepareDuePosts(
+  tx: Db,
+  now: Date,
+  result: PublishScheduledResult,
+  lock: LockHandle
+): Promise<void> {
   const cutoff = new Date(now.getTime() + PREPARE_WINDOW_MS);
 
   const due = await tx.scheduledPost.findMany({
@@ -397,13 +505,21 @@ async function prepareDuePosts(tx: Db, now: Date, result: PublishScheduledResult
         post,
         "Conta usa o provedor Zernio, que não publica agendados nesta versão — reconecte a conta pela Meta em Configurações.",
         post.attempts,
-        result
+        result,
+        "PREPARING"
       );
       continue;
     }
 
-    const accessToken = await decryptOrFail(tx, post, result);
+    const accessToken = await decryptOrFail(tx, post, result, "PREPARING");
     if (accessToken === null) continue;
+
+    if (!lock.isHeld()) {
+      console.warn(
+        `[Agendados] lock consultivo caiu — abortando o resto do tick antes de criar o container do post ${post.id}`
+      );
+      throw new LockLostError();
+    }
 
     try {
       const created = await createContainerForPost(
@@ -424,14 +540,19 @@ async function prepareDuePosts(tx: Db, now: Date, result: PublishScheduledResult
       });
       result.prepared += 1;
     } catch (err) {
-      await handleContainerFailure(tx, post, err, result);
+      await handleContainerFailure(tx, post, err, result, lock);
     }
   }
 }
 
 // --- Phase 2: publish --------------------------------------------------------
 
-async function publishReadyPosts(tx: Db, now: Date, result: PublishScheduledResult): Promise<void> {
+async function publishReadyPosts(
+  tx: Db,
+  now: Date,
+  result: PublishScheduledResult,
+  lock: LockHandle
+): Promise<void> {
   const preparing = await tx.scheduledPost.findMany({
     where: { status: "PREPARING", scheduledFor: { lte: now }, mediaId: null },
     include: { instagramAccount: true },
@@ -446,17 +567,18 @@ async function publishReadyPosts(tx: Db, now: Date, result: PublishScheduledResu
         post,
         "Conta usa o provedor Zernio, que não publica agendados nesta versão — reconecte a conta pela Meta em Configurações.",
         post.attempts,
-        result
+        result,
+        "PREPARING"
       );
       continue;
     }
 
     if (!post.containerId) {
-      await handleContainerFailure(tx, post, new Error("Post sem container preparado"), result);
+      await handleContainerFailure(tx, post, new Error("Post sem container preparado"), result, lock);
       continue;
     }
 
-    const accessToken = await decryptOrFail(tx, post, result);
+    const accessToken = await decryptOrFail(tx, post, result, "PREPARING");
     if (accessToken === null) continue;
 
     let statusCode: ContainerStatusCode;
@@ -467,7 +589,10 @@ async function publishReadyPosts(tx: Db, now: Date, result: PublishScheduledResu
       // Bloqueador 3: a network/Meta exception while polling is NOT grounds
       // to recreate the container — it says nothing about the container
       // itself, only that this one check failed. Just wait for next tick,
-      // unless this has been going on so long it needs a human.
+      // unless this has been going on so long it needs a human. Nothing was
+      // ever published from this path (media_publish is only reached once
+      // the container comes back FINISHED below), so the outcome here is
+      // never uncertain — it's a plain, safe-to-retry-from-scratch failure.
       if (now.getTime() - post.updatedAt.getTime() >= STUCK_POLLING_THRESHOLD_MS) {
         const message = err instanceof Error ? err.message : String(err);
         await markFailed(
@@ -475,7 +600,8 @@ async function publishReadyPosts(tx: Db, now: Date, result: PublishScheduledResu
           post,
           `Consulta de status do container falhou repetidamente por 30+ minutos: ${message}`,
           post.attempts + 1,
-          result
+          result,
+          "PREPARING"
         );
       } else {
         console.warn(
@@ -490,12 +616,12 @@ async function publishReadyPosts(tx: Db, now: Date, result: PublishScheduledResu
       // media_publish from an earlier tick landed on Meta's side but this
       // row never found out (its response was lost). Never call
       // media_publish again for this container.
-      await handlePublishedContainer(tx, post, accessToken, now, result, "PREPARING");
+      await reconcilePublishedContainer(tx, post, accessToken, now, result, "PREPARING");
       continue;
     }
     if (statusCode === "IN_PROGRESS") continue; // still processing, try again next minute
     if (statusCode === "ERROR" || statusCode === "EXPIRED") {
-      await handleContainerFailure(tx, post, new Error(`Container do Instagram voltou ${statusCode}`), result);
+      await handleContainerFailure(tx, post, new Error(`Container do Instagram voltou ${statusCode}`), result, lock);
       continue;
     }
     if (statusCode !== "FINISHED") continue; // unexpected code — wait for a clearer one
@@ -522,6 +648,18 @@ async function publishReadyPosts(tx: Db, now: Date, result: PublishScheduledResu
       data: { status: "PUBLISHING" },
     });
     if (claimed.count === 0) continue;
+
+    if (!lock.isHeld()) {
+      // The claim above already landed, so the row is safely parked in
+      // PUBLISHING either way — reconcileStuckPublishing (which does not
+      // need the lock, it never creates a container or calls media_publish)
+      // resolves it later. Stopping here, rather than calling media_publish
+      // without confidence the lock is still exclusive, is the whole point.
+      console.warn(
+        `[Agendados] lock consultivo caiu — abortando antes de publicar o post ${post.id} (fica em PUBLISHING para reconciliação)`
+      );
+      throw new LockLostError();
+    }
 
     try {
       const published = await publishMediaContainer(
@@ -565,7 +703,7 @@ async function publishReadyPosts(tx: Db, now: Date, result: PublishScheduledResu
         }
 
         if (recheckStatus === "PUBLISHED") {
-          await handlePublishedContainer(tx, post, accessToken, now, result, "PUBLISHING");
+          await reconcilePublishedContainer(tx, post, accessToken, now, result, "PUBLISHING");
         } else if (recheckStatus === "FINISHED") {
           await tx.scheduledPost.updateMany({
             where: { id: post.id, status: "PUBLISHING", containerId: post.containerId },
@@ -632,7 +770,17 @@ async function backfillMissingPermalinks(
  * only rows untouched for 3+ minutes are checked — the container is the
  * single source of truth for what actually happened. This NEVER recreates a
  * container directly (that only happens from PREPARING, via
- * handleContainerFailure) — ERROR/EXPIRED here goes straight to FAILED.
+ * handleContainerFailure) — ERROR/EXPIRED here goes straight to FAILED. This
+ * phase never creates a container or calls media_publish itself, so it does
+ * not need the advisory-lock handle the way prepareDuePosts/publishReadyPosts
+ * do.
+ *
+ * Rodada 3, achado 2 (R4): every markFailed call below passes the EXACT
+ * status ("PUBLISHING") and containerId this function itself just read for
+ * this row. If a concurrent tick has, in the meantime, already resolved the
+ * row (e.g. media_publish finally landed and wrote PUBLISHED), that guard
+ * makes this call a safe no-op instead of overwriting a real publish with
+ * FAILED.
  */
 async function reconcileStuckPublishing(
   tx: Db,
@@ -648,11 +796,11 @@ async function reconcileStuckPublishing(
 
   for (const post of stuck) {
     if (!post.containerId) {
-      await markFailed(tx, post, "Preso em PUBLISHING sem containerId", post.attempts + 1, result);
+      await markFailed(tx, post, "Preso em PUBLISHING sem containerId", post.attempts + 1, result, "PUBLISHING");
       continue;
     }
 
-    const accessToken = await decryptOrFail(tx, post, result);
+    const accessToken = await decryptOrFail(tx, post, result, "PUBLISHING");
     if (accessToken === null) continue;
 
     let statusCode: ContainerStatusCode;
@@ -663,7 +811,9 @@ async function reconcileStuckPublishing(
       // recreate, do not fail (yet); a genuinely dead post is eventually
       // caught because updatedAt keeps getting further in the past... but to
       // avoid an infinite silent stall, escalate after it's been stuck 10x
-      // the reconcile window.
+      // the reconcile window. At that point we genuinely cannot tell whether
+      // Meta ever published this — outcomeUncertain records exactly that,
+      // so retry/reschedule refuses to blindly recreate the container.
       if (now.getTime() - post.updatedAt.getTime() >= RECONCILE_STUCK_PUBLISHING_AFTER_MS * 10) {
         const message = err instanceof Error ? err.message : String(err);
         await markFailed(
@@ -671,14 +821,16 @@ async function reconcileStuckPublishing(
           post,
           `Preso em PUBLISHING e consulta de status seguiu falhando: ${message}`,
           post.attempts + 1,
-          result
+          result,
+          "PUBLISHING",
+          true
         );
       }
       continue;
     }
 
     if (statusCode === "PUBLISHED") {
-      await handlePublishedContainer(tx, post, accessToken, now, result, "PUBLISHING");
+      await reconcilePublishedContainer(tx, post, accessToken, now, result, "PUBLISHING");
       result.reconciled += 1;
     } else if (statusCode === "FINISHED") {
       // media_publish never actually landed — safe to let the next publish
@@ -689,12 +841,15 @@ async function reconcileStuckPublishing(
       });
       if (updated.count === 1) result.reconciled += 1;
     } else if (statusCode === "ERROR" || statusCode === "EXPIRED") {
+      // A confirmed, explicit status from Meta: we KNOW this was not
+      // published, so the outcome is certain — safe to retry from scratch.
       await markFailed(
         tx,
         post,
         `Preso em PUBLISHING; container voltou ${statusCode} na reconciliação`,
         post.attempts + 1,
-        result
+        result,
+        "PUBLISHING"
       );
       result.reconciled += 1;
     }
@@ -730,7 +885,7 @@ async function cleanupFilesFor(
 ): Promise<void> {
   const toClean = await tx.scheduledPost.findMany({
     where,
-    select: { id: true, storagePaths: true, coverPath: true },
+    select: { id: true, status: true, storagePaths: true, coverPath: true },
     take: 50,
   });
 
@@ -738,11 +893,17 @@ async function cleanupFilesFor(
     const filenames = [...post.storagePaths, ...(post.coverPath ? [post.coverPath] : [])];
     try {
       await deleteMediaFiles(filenames);
-      // contentHash is deliberately left untouched (bloqueador 3 / dedup):
-      // the file is gone, but its hash must keep blocking a re-schedule of
-      // the same content indefinitely.
-      await tx.scheduledPost.update({
-        where: { id: post.id },
+      // Guarded by the exact status this query just found the row in
+      // (Rodada 3, achado 4): a post retried/rescheduled between the read
+      // above and this write is no longer PUBLISHED/FAILED/CANCELED, so this
+      // no-ops instead of wiping storagePaths out from under a post that is
+      // active again.
+      //
+      // contentHash is deliberately left untouched either way (bloqueador 3
+      // / dedup): the file is gone, but its hash must keep blocking a
+      // re-schedule of the same content indefinitely.
+      await tx.scheduledPost.updateMany({
+        where: { id: post.id, status: post.status },
         data: { storagePaths: [], coverPath: null },
       });
       result.cleaned += 1;
@@ -752,30 +913,37 @@ async function cleanupFilesFor(
   }
 }
 
-/** Files on disk older than 48h that no active (SCHEDULED/PREPARING/
- * PUBLISHING) post references — an upload that never became a post, or a
- * leftover from a bug. PUBLISHED/FAILED/CANCELED posts' own files are
- * handled by the two functions above, by post id, not by this sweep. */
+/** Files on disk older than 48h that no ScheduledPost row — of ANY status —
+ * still references are true orphans: an upload that never became a post, or
+ * a leftover from a bug. A post's OWN files, for as long as its row still
+ * names them, are never touched here regardless of the post's status or age
+ * — cleanupPublishedFiles/cleanupAbandonedFiles are what retire those, each
+ * on its own schedule, by clearing storagePaths/coverPath once done (which
+ * is exactly what drops them out of the "referenced" set below on the next
+ * tick). `.tmp-*` files (uploads that never finished) are swept separately,
+ * after a much shorter age, since no row can ever reference one by name. */
 async function cleanupOrphanFiles(tx: Db, now: Date, result: PublishScheduledResult): Promise<void> {
-  const active = await tx.scheduledPost.findMany({
-    where: { status: { in: ["SCHEDULED", "PREPARING", "PUBLISHING"] } },
+  const referenced = new Set<string>();
+  const allPosts = await tx.scheduledPost.findMany({
     select: { storagePaths: true, coverPath: true },
   });
-  const referenced = new Set<string>();
-  for (const post of active) {
+  for (const post of allPosts) {
     for (const p of post.storagePaths) referenced.add(p);
     if (post.coverPath) referenced.add(post.coverPath);
   }
 
   const files = await listMediaFiles();
   const orphanCutoff = now.getTime() - ORPHAN_FILE_AFTER_MS;
-  const orphans = files
-    .filter((f) => !referenced.has(f.filename) && f.mtimeMs <= orphanCutoff)
+  const tmpCutoff = now.getTime() - TMP_FILE_MAX_AGE_MS;
+  const toDelete = files
+    .filter((f) =>
+      f.isTmp ? f.mtimeMs <= tmpCutoff : !referenced.has(f.filename) && f.mtimeMs <= orphanCutoff
+    )
     .map((f) => f.filename);
 
-  if (orphans.length === 0) return;
-  await deleteMediaFiles(orphans);
-  result.orphansDeleted += orphans.length;
+  if (toDelete.length === 0) return;
+  await deleteMediaFiles(toDelete);
+  result.orphansDeleted += toDelete.length;
 }
 
 // --- Entry point -------------------------------------------------------------
@@ -783,19 +951,31 @@ async function cleanupOrphanFiles(tx: Db, now: Date, result: PublishScheduledRes
 export type PublishScheduledCronResult = LockResult<PublishScheduledResult>;
 
 /** See lib/scheduled-posts/advisory-lock.ts for the full rationale behind
- * how the global lock (bloqueador 7) is implemented. */
+ * how the global lock (bloqueador 7) is implemented, and `LockLostError`
+ * above for what happens if it drops mid-tick. */
 export async function runPublishScheduledCron(
   now: Date = new Date()
 ): Promise<PublishScheduledCronResult> {
-  return withAdvisoryLock(async () => {
+  return withAdvisoryLock(async (lockArg) => {
+    const lock = asLockHandle(lockArg);
     const result = emptyResult();
-    await prepareDuePosts(prisma, now, result);
-    await publishReadyPosts(prisma, now, result);
-    await reconcileStuckPublishing(prisma, now, result);
-    await backfillMissingPermalinks(prisma, now, result);
-    await cleanupPublishedFiles(prisma, now, result);
-    await cleanupAbandonedFiles(prisma, now, result);
-    await cleanupOrphanFiles(prisma, now, result);
+    try {
+      await prepareDuePosts(prisma, now, result, lock);
+      await publishReadyPosts(prisma, now, result, lock);
+      await reconcileStuckPublishing(prisma, now, result);
+      await backfillMissingPermalinks(prisma, now, result);
+      await cleanupPublishedFiles(prisma, now, result);
+      await cleanupAbandonedFiles(prisma, now, result);
+      await cleanupOrphanFiles(prisma, now, result);
+    } catch (err) {
+      if (err instanceof LockLostError) {
+        console.warn(
+          "[Agendados] lock consultivo perdido no meio do tick — parando por aqui; o que já foi escrito é seguro, o resto espera o próximo tick."
+        );
+        return result;
+      }
+      throw err;
+    }
     return result;
   });
 }
