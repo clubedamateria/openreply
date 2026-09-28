@@ -32,9 +32,11 @@
  * `--conta` stays required either way (it resolves the workspace even for a
  * TikTok/YouTube-only run). TikTok needs `--tiktok-privacidade` (one of
  * PUBLIC_TO_EVERYONE/MUTUAL_FOLLOW_FRIENDS/FOLLOWER_OF_CREATOR/SELF_ONLY, no
- * default) and `--tiktok-consentimento` (a flag — its absence aborts before
- * anything uploads, explaining why); `--tiktok-sem-dueto`/
- * `--tiktok-sem-costura` are optional opt-outs (both allowed by default).
+ * default) and `--tiktok-consentimento` (a bare flag, or exactly `sim` — any
+ * other value aborts before anything uploads, explaining why). Rodada 5,
+ * achado 5: `--tiktok-comentarios`/`--tiktok-dueto`/`--tiktok-costura` are
+ * each `sim|nao`, REQUIRED (no default — TikTok's own API forbids one),
+ * replacing the old `--tiktok-sem-dueto`/`--tiktok-sem-costura` opt-outs.
  * YouTube needs `--youtube-infantil sim|nao` (no default — COPPA); the title
  * comes from a sibling `<nome>-titulo.txt` if present, else the caption's
  * first line cut to 100 chars; `--youtube-visibilidade` defaults to
@@ -44,8 +46,9 @@
  */
 
 import { createHash } from "node:crypto";
-import fs from "node:fs";
+import fs, { realpathSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseCsv } from "@/lib/utils/csv";
 import { buildScheduleGrid } from "@/lib/scheduled-posts/schedule-grid";
 import { saoPauloToUtcIso } from "@/lib/scheduled-posts/timezone";
@@ -122,6 +125,28 @@ function parseDestinos(args: Args): Platform[] {
   return [...new Set(mapped)];
 }
 
+/** `--tiktok-comentarios`/`--tiktok-dueto`/`--tiktok-costura` are each
+ * required and take exactly `sim`/`nao` — Rodada 5, achado 5: TikTok's own
+ * Content Posting API forbids a default value on these, so there is no safe
+ * fallback to assume when the flag is missing or misspelled. */
+function requireSimNaoFlag(args: Args, key: string, reason: string): boolean {
+  const value = requireString(args, key);
+  if (value !== "sim" && value !== "nao") {
+    throw new Error(`--${key} é obrigatório para --destinos com tiktok (use "sim" ou "nao") — ${reason}`);
+  }
+  return value === "sim";
+}
+
+/** Rodada 5, achado 6: `--tiktok-consentimento` used to accept ANY truthy
+ * value (including the string `"nao"`, since parseArgs only turns a flag
+ * into `true` when it has no following value) as consent — a copy-pasted
+ * `--tiktok-consentimento nao` would silently be read as "yes, I consent".
+ * Now only the bare flag or exactly `"sim"` counts; anything else aborts. */
+function hasTiktokConsent(args: Args): boolean {
+  const value = args["tiktok-consentimento"];
+  return value === true || value === "sim";
+}
+
 function buildTiktokSettings(args: Args): {
   privacyLevel: string;
   allowComment: boolean;
@@ -135,16 +160,21 @@ function buildTiktokSettings(args: Args): {
       `--tiktok-privacidade é obrigatório para --destinos com tiktok e deve ser um de: ${TIKTOK_PRIVACY_LEVELS.join(", ")}`
     );
   }
-  if (!args["tiktok-consentimento"]) {
+  if (args["tiktok-consentimento"] !== undefined && !hasTiktokConsent(args)) {
+    throw new Error(
+      `--tiktok-consentimento só aceita a flag sozinha ou "sim" (recebido "${String(args["tiktok-consentimento"])}") — nada além disso conta como consentimento`
+    );
+  }
+  if (!hasTiktokConsent(args)) {
     throw new Error(
       '--tiktok-consentimento é obrigatório para --destinos com tiktok — confirma que revisou o conteúdo e concorda com a Music Usage Confirmation do TikTok'
     );
   }
   return {
     privacyLevel: privacidade,
-    allowComment: true,
-    allowDuet: !args["tiktok-sem-dueto"],
-    allowStitch: !args["tiktok-sem-costura"],
+    allowComment: requireSimNaoFlag(args, "tiktok-comentarios", "TikTok não permite valor padrão para comentários"),
+    allowDuet: requireSimNaoFlag(args, "tiktok-dueto", "TikTok não permite valor padrão para dueto"),
+    allowStitch: requireSimNaoFlag(args, "tiktok-costura", "TikTok não permite valor padrão para costura"),
     consentGiven: true,
   };
 }
@@ -614,7 +644,22 @@ async function main() {
 // never when a test imports this module to exercise the pure helpers below or
 // `main()` itself with mocked fetch/env — an unguarded top-level call would
 // otherwise fire on every `import()` and read real argv/env.
-if (import.meta.url === `file://${process.argv[1]}`) {
+//
+// Rodada 5, achado 11: comparing `import.meta.url` to a hand-built
+// `file://${process.argv[1]}` string stays silent when the script is called
+// through a symlink (`argv[1]` is the symlink's own path, which never equals
+// the real module URL Node resolves for `import.meta.url`) — resolving both
+// sides to their real, canonical path makes the guard match either way.
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   main().catch((err) => {
     console.error("[agendar-lote]", err instanceof Error ? err.message : err);
     process.exitCode = 1;

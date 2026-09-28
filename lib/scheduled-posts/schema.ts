@@ -43,9 +43,14 @@ export const tikTokSettingsSchema = z.object({
   privacyLevel: z.enum(TIKTOK_PRIVACY_LEVELS, {
     message: "Escolha a privacidade do TikTok",
   }),
-  allowComment: z.boolean().optional().default(true),
-  allowDuet: z.boolean().optional().default(true),
-  allowStitch: z.boolean().optional().default(true),
+  // Rodada 5, achado 5: TikTok's own Content Posting API documents these
+  // three as required with NO default value — a silent default of `true`
+  // here would mean the API boundary itself grants comment/duet/stitch
+  // permission the creator never explicitly asked for. No `.optional()`, no
+  // `.default(...)`: the caller (UI/CLI) must send an explicit boolean.
+  allowComment: z.boolean({ message: '"Permitir comentários" é obrigatório' }),
+  allowDuet: z.boolean({ message: '"Permitir dueto" é obrigatório' }),
+  allowStitch: z.boolean({ message: '"Permitir costura" é obrigatório' }),
   // The one checkbox ("Confirmo que revisei o conteúdo e concordo com a
   // Music Usage Confirmation do TikTok") feeds BOTH
   // content_preview_confirmed and express_consent_given at the Zernio/TikTok

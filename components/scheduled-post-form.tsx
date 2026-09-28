@@ -32,6 +32,10 @@ import {
 } from "lucide-react";
 import type { AccountOption } from "@/components/account-select";
 import { saoPauloToUtcIso } from "@/lib/scheduled-posts/timezone";
+// Type-only import: erased at build time, so it never pulls
+// lib/zernio/client.ts's runtime code (and its server-only-adjacent
+// dependencies) into this client bundle.
+import type { TikTokCreatorInfo } from "@/lib/zernio/client";
 
 type MediaType = "REELS" | "IMAGE" | "CAROUSEL";
 type Platform = "INSTAGRAM" | "TIKTOK" | "YOUTUBE";
@@ -110,10 +114,16 @@ export default function ScheduledPostForm() {
   const [enabledDestinations, setEnabledDestinations] = useState({ tiktok: false, youtube: false });
 
   const [tiktokPrivacy, setTiktokPrivacy] = useState(""); // no default, on purpose
-  const [tiktokAllowComment, setTiktokAllowComment] = useState(true);
-  const [tiktokAllowDuet, setTiktokAllowDuet] = useState(true);
-  const [tiktokAllowStitch, setTiktokAllowStitch] = useState(true);
+  // Rodada 5, achado 5: TikTok forbids a default value on these — they start
+  // UNCHECKED, the operator must explicitly turn each one on.
+  const [tiktokAllowComment, setTiktokAllowComment] = useState(false);
+  const [tiktokAllowDuet, setTiktokAllowDuet] = useState(false);
+  const [tiktokAllowStitch, setTiktokAllowStitch] = useState(false);
   const [tiktokConsent, setTiktokConsent] = useState(false);
+  // Rodada 5, achado 5: whatever the creator already turned off in the
+  // TikTok app itself (GET /accounts/{id}/tiktok/creator-info) — `null`
+  // means "couldn't fetch it, offer all three normally".
+  const [tiktokCreatorInfo, setTiktokCreatorInfo] = useState<TikTokCreatorInfo | null>(null);
 
   const [youtubeTitle, setYoutubeTitle] = useState("");
   const [youtubeTitleTouched, setYoutubeTitleTouched] = useState(false);
@@ -134,7 +144,27 @@ export default function ScheduledPostForm() {
       .then((res) => {
         if (res.success) setEnabledDestinations(res.data);
       });
+    fetch("/api/scheduled-posts/tiktok-creator-info")
+      .then((r) => r.json())
+      .then((res) => {
+        if (res.success && res.data) setTiktokCreatorInfo(res.data);
+      });
   }, []);
+
+  // Rodada 5, achado 5: force back to false (never silently re-enable) any
+  // toggle the creator already turned off in the TikTok app — an
+  // `enabled: false` there means Zernio/TikTok would reject a `true` anyway.
+  useEffect(() => {
+    if (!tiktokCreatorInfo) return;
+    const s = tiktokCreatorInfo.postingLimits.interactionSettings;
+    if (s.allow_comment.enabled === false) setTiktokAllowComment(false);
+    if (s.allow_duet.enabled === false) setTiktokAllowDuet(false);
+    if (s.allow_stitch.enabled === false) setTiktokAllowStitch(false);
+  }, [tiktokCreatorInfo]);
+
+  const tiktokCommentLocked = tiktokCreatorInfo?.postingLimits.interactionSettings.allow_comment.enabled === false;
+  const tiktokDuetLocked = tiktokCreatorInfo?.postingLimits.interactionSettings.allow_duet.enabled === false;
+  const tiktokStitchLocked = tiktokCreatorInfo?.postingLimits.interactionSettings.allow_stitch.enabled === false;
 
   // A TikTok/YouTube-only video and the shared upload with Instagram must be
   // the very same file set — REELS is the only mediaType either accepts, so
@@ -559,19 +589,43 @@ export default function ScheduledPostForm() {
               )}
             </div>
             <div className="flex flex-wrap gap-4">
-              <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <input type="checkbox" checked={tiktokAllowComment} onChange={(e) => setTiktokAllowComment(e.target.checked)} className="h-4 w-4 rounded border-border" />
+              <label className={`flex items-center gap-2 text-sm font-semibold ${tiktokCommentLocked ? "text-muted" : "text-foreground"}`}>
+                <input
+                  type="checkbox"
+                  checked={tiktokAllowComment}
+                  disabled={tiktokCommentLocked}
+                  onChange={(e) => setTiktokAllowComment(e.target.checked)}
+                  className="h-4 w-4 rounded border-border"
+                />
                 Permitir comentários
               </label>
-              <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <input type="checkbox" checked={tiktokAllowDuet} onChange={(e) => setTiktokAllowDuet(e.target.checked)} className="h-4 w-4 rounded border-border" />
+              <label className={`flex items-center gap-2 text-sm font-semibold ${tiktokDuetLocked ? "text-muted" : "text-foreground"}`}>
+                <input
+                  type="checkbox"
+                  checked={tiktokAllowDuet}
+                  disabled={tiktokDuetLocked}
+                  onChange={(e) => setTiktokAllowDuet(e.target.checked)}
+                  className="h-4 w-4 rounded border-border"
+                />
                 Permitir dueto
               </label>
-              <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <input type="checkbox" checked={tiktokAllowStitch} onChange={(e) => setTiktokAllowStitch(e.target.checked)} className="h-4 w-4 rounded border-border" />
+              <label className={`flex items-center gap-2 text-sm font-semibold ${tiktokStitchLocked ? "text-muted" : "text-foreground"}`}>
+                <input
+                  type="checkbox"
+                  checked={tiktokAllowStitch}
+                  disabled={tiktokStitchLocked}
+                  onChange={(e) => setTiktokAllowStitch(e.target.checked)}
+                  className="h-4 w-4 rounded border-border"
+                />
                 Permitir costura
               </label>
             </div>
+            {(tiktokCommentLocked || tiktokDuetLocked || tiktokStitchLocked) && (
+              <p className="helper flex items-center gap-1 text-warning">
+                <AlertCircle size={12} aria-hidden="true" />
+                Desabilitado(s) porque a conta já desligou isso no app do TikTok.
+              </p>
+            )}
             <label className="flex items-start gap-2 text-sm font-semibold text-foreground">
               <input
                 type="checkbox"
