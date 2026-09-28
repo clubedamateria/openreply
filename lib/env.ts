@@ -119,6 +119,32 @@ export function getResendAlertConfig(): {
   return { apiKey, from, to };
 }
 
+/**
+ * Fase 4 (agendados p/ TikTok e YouTube Shorts, via Zernio, publicando
+ * direto — não é o mesmo caso de uso do `ZernioConnection`/Configurações,
+ * que é a caixa de entrada do Instagram). Todas opcionais: sem
+ * `ZERNIO_API_KEY`, os dois destinos ficam desabilitados na UI e na API; sem
+ * a conta de uma plataforma específica, só aquele destino fica desabilitado.
+ */
+export function getZernioApiKey(): string | null {
+  return process.env.ZERNIO_API_KEY || null;
+}
+
+export function getZernioTikTokAccountId(): string | null {
+  return process.env.ZERNIO_TIKTOK_ACCOUNT_ID || null;
+}
+
+export function getZernioYoutubeAccountId(): string | null {
+  return process.env.ZERNIO_YOUTUBE_ACCOUNT_ID || null;
+}
+
+/** `null` means that destination is disabled (missing the API key or the
+ * platform's own account id) — callers show/allow it accordingly. */
+export function getZernioAccountIdForPlatform(platform: "TIKTOK" | "YOUTUBE"): string | null {
+  if (!getZernioApiKey()) return null;
+  return platform === "TIKTOK" ? getZernioTikTokAccountId() : getZernioYoutubeAccountId();
+}
+
 export const serverEnvSchema = z.object({
   NEXTAUTH_URL: z.string().url(),
   NEXTAUTH_SECRET: z.string().min(16),
