@@ -88,12 +88,15 @@ export function createFakeScheduledPostDb() {
   // Mirrors withAdvisoryLock's observable contract exactly (see
   // lib/scheduled-posts/advisory-lock.ts): held for the whole duration of
   // `fn`, refusing a concurrent call outright, released once `fn` settles
-  // (success or throw) — never left dangling.
-  const withAdvisoryLock = vi.fn(async <T>(fn: () => Promise<T>) => {
+  // (success or throw) — never left dangling. Also passes a `LockHandle`
+  // whose `isHeld()` always reports true, like a real connection that never
+  // drops — tests that need to simulate a lost lock (R4) override
+  // `withAdvisoryLock` themselves instead of mutating this default.
+  const withAdvisoryLock = vi.fn(async <T>(fn: (lock: { isHeld(): boolean }) => Promise<T>) => {
     if (lockHeld) return { skipped: "locked" as const };
     lockHeld = true;
     try {
-      return await fn();
+      return await fn({ isHeld: () => true });
     } finally {
       lockHeld = false;
     }
@@ -132,7 +135,7 @@ export function createFakeScheduledPostDb() {
   const decryptToken = vi.fn((token: string) => token);
   const deleteMediaFiles = vi.fn(async (filenames: string[]): Promise<void> => void filenames);
   const listMediaFiles = vi.fn(
-    async (): Promise<Array<{ filename: string; mtimeMs: number }>> => []
+    async (): Promise<Array<{ filename: string; mtimeMs: number; isTmp: boolean }>> => []
   );
   const sendPublishFailureAlert = vi.fn();
   const sendPublishWarningAlert = vi.fn();
