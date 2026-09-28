@@ -91,10 +91,17 @@ export const createScheduledPostSchema = z
 
 export type CreateScheduledPostInput = z.infer<typeof createScheduledPostSchema>;
 
-/** Body of `PATCH /api/scheduled-posts/[id]` — the panel's row actions. */
+/** Body of `PATCH /api/scheduled-posts/[id]` — the panel's row actions.
+ *
+ * `force` on `retry`/`reschedule` bypasses the outcome-uncertain safety
+ * check (Rodada 3, achado 1): a FAILED post whose previous attempt could not
+ * be confirmed one way or the other normally refuses to blindly recreate the
+ * container until the caller has manually checked Instagram — `force: true`
+ * is the "já conferi, publicar de novo" override.
+ */
 export const scheduledPostActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("cancel") }),
-  z.object({ action: z.literal("retry") }),
+  z.object({ action: z.literal("retry"), force: z.boolean().optional().default(false) }),
   z.object({ action: z.literal("publish-now") }),
   z.object({
     action: z.literal("reschedule"),
@@ -104,6 +111,7 @@ export const scheduledPostActionSchema = z.discriminatedUnion("action", [
       .refine((v) => !isScheduledForTooFarInThePast(v), {
         message: "scheduledFor não pode ser mais de 5 minutos no passado",
       }),
+    force: z.boolean().optional().default(false),
   }),
 ]);
 
