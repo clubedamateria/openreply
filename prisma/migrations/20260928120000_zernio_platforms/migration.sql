@@ -17,6 +17,13 @@ ALTER TABLE "ScheduledPost"
   ADD COLUMN "zernioAccountId" TEXT,
   ADD COLUMN "zernioPostId" TEXT,
   ADD COLUMN "platformSettings" JSONB,
+  -- Rodada 5 (revisão adversarial da Fase 4, ainda não aplicada em produção —
+  -- editada no lugar em vez de virar uma migration nova): achado 2
+  -- (idempotency key nova a cada reivindicação, não presa a `attempts`) e
+  -- achado 3 (janela de reconciliação pelo momento do claim, não por
+  -- `updatedAt`, que numa linha FAILED é o momento da falha).
+  ADD COLUMN "zernioIdempotencyKey" TEXT,
+  ADD COLUMN "claimedAt" TIMESTAMP(3),
   ALTER COLUMN "instagramAccountId" DROP NOT NULL;
 
 -- CreateIndex

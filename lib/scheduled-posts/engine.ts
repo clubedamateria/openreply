@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import {
@@ -109,6 +110,16 @@ const RECONCILE_MATCH_SLACK_MS = 2 * 60 * 1000;
 // letting one slow tick balloon.
 const MAX_PREPARE_PER_TICK = 10;
 const MAX_PUBLISH_PER_TICK = 10;
+// Rodada 5, achado 4: createZernioPost's own call can take up to its new
+// 240s timeout (TikTok/YouTube publishing synchronously inside publishNow) —
+// capped much lower than MAX_PUBLISH_PER_TICK so one tick can never balloon
+// past the cron's own budget; the rest waits for the next minute.
+const MAX_ZERNIO_PUBLISH_PER_TICK = 3;
+// Rodada 5, achado 3 (achado 10): slack subtracted from `claimedAt` before
+// sending `fromDate` to `listZernioPosts` — wide enough to tolerate a little
+// clock skew between this process and Zernio without pulling in unrelated
+// history.
+const RECONCILE_LIST_FROM_DATE_SLACK_MS = 5 * 60 * 1000;
 
 function isVideoUrl(url: string): boolean {
   return /\.(mp4|mov|m4v)(\?|#|$)/i.test(url);
@@ -849,7 +860,7 @@ export async function applyZernioPlatformResult(
   tx: Db,
   post: Prisma.ScheduledPostGetPayload<object>,
   zernioPostId: string,
-  platformResult: ZernioPost["platforms"][number] | undefined,
+  platformResult: NonNullable<ZernioPost["platforms"]>[number] | undefined,
   now: Date,
   result: PublishScheduledResult,
   fromStatus: ScheduledPostStatus = "PUBLISHING"
@@ -893,16 +904,22 @@ async function publishZernioReadyPosts(
 
   const due = await tx.scheduledPost.findMany({
     where: { status: "SCHEDULED", platform: { in: ["TIKTOK", "YOUTUBE"] }, scheduledFor: { lte: now } },
-    take: MAX_PUBLISH_PER_TICK,
+    take: MAX_ZERNIO_PUBLISH_PER_TICK,
     orderBy: { scheduledFor: "asc" },
   });
 
   for (const post of due) {
-    // Conditional claim, mirroring prepareDuePosts's own claim for Instagram:
-    // only one overlapping tick moves a given post out of SCHEDULED.
+    // Rodada 5, achado 2: the idempotency key is generated HERE, in the same
+    // conditional write that claims SCHEDULED->PUBLISHING — not derived from
+    // `attempts` (which a retry/reschedule resets to 0, silently reviving a
+    // key that has been dead in Zernio's 24h idempotency window for a day).
+    // `claimedAt` is written in the same call (achado 3): it — not
+    // `updatedAt`, which on a FAILED row is the moment of failure — is what
+    // the reconciliation window below is measured from.
+    const newIdempotencyKey = randomUUID();
     const claimed = await tx.scheduledPost.updateMany({
       where: { id: post.id, status: "SCHEDULED" },
-      data: { status: "PUBLISHING" },
+      data: { status: "PUBLISHING", zernioIdempotencyKey: newIdempotencyKey, claimedAt: now },
     });
     if (claimed.count === 0) continue;
 
@@ -938,12 +955,6 @@ async function publishZernioReadyPosts(
       throw new LockLostError();
     }
 
-    // Stable per-attempt, not per-tick: a retry of THIS SAME attempt within
-    // Zernio's 24h/per-credential idempotency window replays the original
-    // response instead of posting twice; a genuinely new attempt (after a
-    // human-confirmed retry bumps `attempts`) gets a fresh key.
-    const idempotencyKey = `sp-${post.id}-${post.attempts}`;
-
     let zpost: ZernioPost;
     try {
       zpost = await createZernioPost(
@@ -955,8 +966,12 @@ async function publishZernioReadyPosts(
           accountId: post.zernioAccountId,
           tiktokSettings,
           youtubeSpecificData,
+          // Rodada 5, achado 3: lets reconcileZernioByList match a lost
+          // response back to this exact row by id, instead of only by the
+          // fuzzier content+media+time-window heuristic.
+          metadata: { scheduledPostId: post.id, claimKey: newIdempotencyKey },
         },
-        idempotencyKey
+        newIdempotencyKey
       );
     } catch (err) {
       if (isExplicit4xxMetaError(err)) {
@@ -986,9 +1001,14 @@ async function publishZernioReadyPosts(
     });
     if (claimedId.count === 0) continue; // a stale tick — another already resolved this row
 
-    const platformResult =
-      zpost.platforms.find((p) => p.platform === zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE")) ??
-      zpost.platforms[0];
+    // Rodada 5, achado 2: a repeated/idempotent response can come back
+    // without `platforms` at all — `?? []` plus `.find` (never `?? [0]`)
+    // means "no entry for our platform" resolves to `undefined`, which
+    // applyZernioPlatformResult already treats as "pending" (poll again next
+    // tick), never as an exception.
+    const platformResult = (zpost.platforms ?? []).find(
+      (p) => p.platform === zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE")
+    );
     await applyZernioPlatformResult(tx, post, zpost._id, platformResult, now, result);
   }
 }
@@ -1022,6 +1042,51 @@ async function backfillMissingPermalinks(
       }
     } catch (err) {
       console.warn(`[Agendados] backfill de permalink falhou para ${post.id}:`, err);
+    }
+  }
+  void result; // reserved for future counting; not a required metric today
+}
+
+/** Rodada 5, achado 7: `backfillMissingPermalinks` above only ever looked at
+ * INSTAGRAM rows — a TikTok/YouTube post whose `POST /posts` response landed
+ * without `platformPostUrl` yet (Zernio's own doc: it comes back `null` right
+ * after publishing, `GET /posts/{id}` is what eventually has it) never got a
+ * link filled in. Best-effort, capped at 5/tick, same as the Instagram
+ * version never blocking anything else. */
+async function backfillMissingZernioPermalinks(
+  tx: Db,
+  now: Date,
+  result: PublishScheduledResult
+): Promise<void> {
+  const apiKey = getZernioApiKey();
+  if (!apiKey) return;
+
+  const cutoff = new Date(now.getTime() - CLEANUP_PUBLISHED_AFTER_MS);
+  const missing = await tx.scheduledPost.findMany({
+    where: {
+      status: "PUBLISHED",
+      platform: { in: ["TIKTOK", "YOUTUBE"] },
+      zernioPostId: { not: null },
+      permalink: null,
+      publishedAt: { gte: cutoff },
+    },
+    take: 5,
+  });
+
+  for (const post of missing) {
+    if (!post.zernioPostId) continue;
+    try {
+      const remote = await getZernioPost(apiKey, post.zernioPostId);
+      const platformName = zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE");
+      const platformResult = (remote.platforms ?? []).find((p) => p.platform === platformName);
+      if (platformResult?.platformPostUrl) {
+        await tx.scheduledPost.updateMany({
+          where: { id: post.id, zernioPostId: post.zernioPostId },
+          data: { permalink: platformResult.platformPostUrl },
+        });
+      }
+    } catch (err) {
+      console.warn(`[Agendados] backfill de permalink (Zernio) falhou para ${post.id}:`, err);
     }
   }
   void result; // reserved for future counting; not a required metric today
@@ -1158,32 +1223,53 @@ export async function reconcileZernioByList(
 ): Promise<"published" | "failed" | "pending"> {
   if (!post.zernioAccountId) return "pending";
 
+  // Rodada 5, achado 3: the window (and the `fromDate` sent to the API) is
+  // measured from the CLAIM moment (`claimedAt`), never `updatedAt` — on a
+  // FAILED row `updatedAt` is the moment of failure, which is always AFTER
+  // the claim and would wrongly exclude the very post being searched for.
+  // `claimedAt` is only ever null for a row claimed before this column
+  // existed (never happened in production — the migration was never
+  // applied); `updatedAt` is kept as a defensive fallback for that case.
+  const claimedAt = post.claimedAt ?? post.updatedAt;
+  const windowStartMs = claimedAt.getTime() - RECONCILE_MATCH_SLACK_MS;
+  const fromDate = new Date(claimedAt.getTime() - RECONCILE_LIST_FROM_DATE_SLACK_MS);
+  const mediaUrl = post.mediaUrls[0];
+  const platformName = zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE");
+
   let list: ZernioPost[];
   try {
-    list = await listZernioPosts(apiKey, { accountId: post.zernioAccountId, limit: 20 });
+    list = await listZernioPosts(apiKey, { accountId: post.zernioAccountId, limit: 20, fromDate });
   } catch (err) {
     console.warn(`[Agendados] listZernioPosts falhou ao reconciliar o post ${post.id}:`, err);
     return "pending";
   }
 
-  const windowStartMs = post.updatedAt.getTime() - RECONCILE_MATCH_SLACK_MS;
-  const mediaUrl = post.mediaUrls[0];
-  const platformName = zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE");
+  // Rodada 5, achado 3: match FIRST by the `metadata.scheduledPostId` this
+  // row's own POST sent — exact and unambiguous. Only fall back to the
+  // fuzzier content+media+time-window heuristic (Rodada 3's original design)
+  // when metadata is absent or matches nothing, since `metadata` on the list
+  // response is not confirmed by the docs (see lib/zernio/client.ts).
+  let match = list.find((p) => p.metadata?.scheduledPostId === post.id);
 
-  const candidates = list.filter((p) => {
-    const createdMs = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
-    if (!Number.isFinite(createdMs) || createdMs < windowStartMs) return false;
-    const contentMatches = (p.content ?? "") === post.caption;
-    const mediaMatches = (p.mediaItems ?? []).some((m) => m.url === mediaUrl);
-    return contentMatches && mediaMatches;
-  });
-  // 0 candidates: not found (yet, or ever — Zernio's own retention on this
-  // listing is unknown). 2+: ambiguous, same as Instagram's own reconcile —
-  // safer to keep waiting than to guess. Either way, not resolved this tick.
-  if (candidates.length !== 1) return "pending";
+  if (!match) {
+    const candidates = list.filter((p) => {
+      const createdMs = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
+      if (!Number.isFinite(createdMs) || createdMs < windowStartMs) return false;
+      const contentMatches = (p.content ?? "") === post.caption;
+      const mediaMatches = (p.mediaItems ?? []).some((m) => m.url === mediaUrl);
+      return contentMatches && mediaMatches;
+    });
+    // 0 candidates: not found (yet, or ever — Zernio's own retention on this
+    // listing is unknown). 2+: ambiguous, same as Instagram's own reconcile —
+    // safer to keep waiting than to guess. Either way, not resolved this tick.
+    if (candidates.length !== 1) return "pending";
+    match = candidates[0];
+  }
 
-  const match = candidates[0];
-  const platformResult = match.platforms.find((p) => p.platform === platformName) ?? match.platforms[0];
+  // Rodada 5, achado 3 (achado 10): match ONLY the exact platform-name entry
+  // — no `?? platforms[0]` fallback. A missing entry is "still pending",
+  // never "adopt whatever's first".
+  const platformResult = (match.platforms ?? []).find((p) => p.platform === platformName);
   // Found the post, but its own platform status is itself still unresolved
   // — nothing to adopt yet, try again next tick.
   if (!platformResult || (platformResult.status !== "published" && platformResult.status !== "failed")) {
@@ -1234,16 +1320,40 @@ async function reconcileZernioPublishing(tx: Db, now: Date, result: PublishSched
   });
 
   const apiKey = getZernioApiKey();
-  if (!apiKey) return; // nothing to poll with; STUCK_POLLING_THRESHOLD_MS below still eventually escalates
 
   for (const post of publishing) {
     const stuckForMs = now.getTime() - post.updatedAt.getTime();
+
+    if (!apiKey) {
+      // Rodada 5, achado 8: an early `return` here used to skip the WHOLE
+      // loop whenever ZERNIO_API_KEY was missing, leaving every PUBLISHING
+      // row stuck forever — despite the old comment's own claim that
+      // STUCK_POLLING_THRESHOLD_MS "still eventually escalates" it (it never
+      // ran). Now each row keeps being checked against that same 30-minute
+      // threshold and escalates to FAILED+outcomeUncertain with an alert;
+      // only the reconciliation call itself (which needs the key) is
+      // skipped.
+      if (stuckForMs >= STUCK_POLLING_THRESHOLD_MS) {
+        await markZernioFailed(
+          tx,
+          post,
+          "ZERNIO_API_KEY não configurado — não foi possível reconciliar por 30+ minutos",
+          post.attempts + 1,
+          result,
+          "PUBLISHING",
+          true
+        );
+      }
+      continue;
+    }
 
     if (post.zernioPostId) {
       try {
         const remote = await getZernioPost(apiKey, post.zernioPostId);
         const platformName = zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE");
-        const platformResult = remote.platforms.find((p) => p.platform === platformName) ?? remote.platforms[0];
+        // Rodada 5, achado 2: no `?? platforms[0]` — a missing entry for our
+        // own platform is "still pending", not "adopt whatever's first".
+        const platformResult = (remote.platforms ?? []).find((p) => p.platform === platformName);
         const outcome = await applyZernioPlatformResult(tx, post, post.zernioPostId, platformResult, now, result);
         if (outcome !== "pending") {
           result.reconciled += 1;
@@ -1429,12 +1539,20 @@ export async function runPublishScheduledCron(
     const lock = asLockHandle(lockArg);
     const result = emptyResult();
     try {
+      // Rodada 5, achado 4: Instagram's own two phases run BEFORE Zernio's —
+      // on purpose. createZernioPost can now take up to 240s (see
+      // ZERNIO_CREATE_POST_TIMEOUT_MS), and MAX_ZERNIO_PUBLISH_PER_TICK caps
+      // it at 3 posts/tick so a slow Zernio call never eats the whole
+      // minute — but running Instagram first either way means a slow/absent
+      // Zernio never delays Instagram's own publish-scheduled work within
+      // the same tick.
       await prepareDuePosts(prisma, now, result, lock);
       await publishReadyPosts(prisma, now, result, lock);
       await publishZernioReadyPosts(prisma, now, result, lock);
       await reconcileStuckPublishing(prisma, now, result);
       await reconcileZernioPublishing(prisma, now, result);
       await backfillMissingPermalinks(prisma, now, result);
+      await backfillMissingZernioPermalinks(prisma, now, result);
       await cleanupPublishedFiles(prisma, now, result);
       await cleanupAbandonedFiles(prisma, now, result);
       await cleanupOrphanFiles(prisma, now, result);

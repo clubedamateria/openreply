@@ -490,6 +490,18 @@ model ScheduledPost {
   /// YOUTUBE — see lib/scheduled-posts/schema.ts for the zod shapes this is
   /// validated against on write and parsed with on read.
   platformSettings Json?
+  /// Rodada 5, achado 2. Generated fresh (`randomUUID()`) in the SAME
+  /// conditional write that claims SCHEDULED->PUBLISHING — this, not
+  /// `sp-${id}-${attempts}`, is what goes in the `Idempotency-Key` header of
+  /// `POST /posts`. Cleared by retry/reschedule alongside `zernioPostId`, so
+  /// the next claim always gets a fresh key instead of replaying a response
+  /// that went dead 24h ago.
+  zernioIdempotencyKey String?
+  /// Rodada 5, achado 3. Written at the same claim moment as
+  /// `zernioIdempotencyKey` — the reconciliation window (both the in-memory
+  /// match and `listZernioPosts`'s `fromDate`) uses THIS, not `updatedAt`
+  /// (which on a FAILED row is the moment of failure, not the claim).
+  claimedAt DateTime?
 
   attempts     Int       @default(0)
   errorMessage String?

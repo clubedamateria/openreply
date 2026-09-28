@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { getWorkspaceInstagramAccount } from "@/lib/instagram-accounts";
 import { resolveScheduledPostActor } from "@/lib/scheduled-posts/auth";
-import { createScheduledPostSchema } from "@/lib/scheduled-posts/schema";
+import { createScheduledPostSchema, scheduledPostPlatformSchema } from "@/lib/scheduled-posts/schema";
 import { getMediaPublicUrl, hashMediaFile, mediaFileExists } from "@/lib/storage/media";
 import { getZernioAccountIdForPlatform } from "@/lib/env";
 import type { Prisma } from "@/app/generated/prisma/client";
@@ -83,8 +83,20 @@ export async function GET(request: NextRequest) {
   const accountFilter =
     instagramAccountId && instagramAccountId !== "all" ? { instagramAccountId } : {};
   const platform = request.nextUrl.searchParams.get("platform");
-  const platformFilter =
-    platform && platform !== "all" ? { platform: platform as Prisma.EnumScheduledPostPlatformFilter["equals"] } : {};
+  let platformFilter: Prisma.ScheduledPostWhereInput = {};
+  if (platform && platform !== "all") {
+    // Rodada 5, achado 9: an invalid value used to be cast straight into the
+    // Prisma filter (`as ...`), crashing the query with an opaque 500
+    // instead of a clear 400.
+    const parsedPlatform = scheduledPostPlatformSchema.safeParse(platform);
+    if (!parsedPlatform.success) {
+      return NextResponse.json(
+        { success: false, error: `platform inválido: "${platform}"` },
+        { status: 400 }
+      );
+    }
+    platformFilter = { platform: parsedPlatform.data };
+  }
 
   const posts = await prisma.scheduledPost.findMany({
     where: { workspaceId: actor.workspaceId, ...accountFilter, ...platformFilter },

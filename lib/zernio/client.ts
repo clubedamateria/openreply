@@ -123,7 +123,11 @@ export interface ZernioPostPlatformResult {
 export interface ZernioPost {
   _id: string;
   status: string;
-  platforms: ZernioPostPlatformResult[];
+  /** Rodada 5, achado 2: a repeated/idempotent response (or a list item) can
+   * come back without this array at all — every reader must guard with
+   * `?? []` and treat "no entry for our platform" as still pending, never as
+   * an exception. */
+  platforms?: ZernioPostPlatformResult[];
   /** Present on `POST`/`GET /posts/{id}` responses; assumed present on
    * `GET /posts` (list) items too for `reconcileZernioByList` in
    * lib/scheduled-posts/engine.ts to match against — not verified against
@@ -182,6 +186,13 @@ export async function createZernioPost(
     accountId: string;
     tiktokSettings?: TikTokSettingsPayload;
     youtubeSpecificData?: YoutubePlatformSpecificData;
+    /** Rodada 5, achado 3: `{ scheduledPostId, claimKey }`, so reconciliation
+     * (lib/scheduled-posts/engine.ts's reconcileZernioByList) can match a
+     * lost response back to the exact row by id instead of only by
+     * content+media+time-window. Confirmed field name — docs.zernio.com's
+     * create-post reference: "Free-form key/value pairs of your own, stored
+     * on the post and returned on reads and in webhook payloads." */
+    metadata?: Record<string, string>;
   },
   idempotencyKey: string
 ): Promise<ZernioPost> {
@@ -200,6 +211,7 @@ export async function createZernioPost(
     publishNow: true,
   };
   if (params.tiktokSettings) body.tiktokSettings = params.tiktokSettings;
+  if (params.metadata) body.metadata = params.metadata;
 
   const { post } = await zernioRequest<{ post: ZernioPost }>({
     apiKey,
@@ -207,6 +219,10 @@ export async function createZernioPost(
     method: "POST",
     body,
     idempotencyKey,
+    // Rodada 5, achado 4: publishNow makes this call synchronous with the
+    // actual TikTok/YouTube publish (TikTok took ~18s for real) — the
+    // default 30s timeout used by every other Zernio call is too tight here.
+    timeoutMs: ZERNIO_CREATE_POST_TIMEOUT_MS,
   });
   return post;
 }
@@ -232,13 +248,48 @@ export async function getZernioPost(apiKey: string, postId: string): Promise<Zer
  */
 export async function listZernioPosts(
   apiKey: string,
-  params: { accountId: string; limit?: number }
+  params: { accountId: string; limit?: number; fromDate?: Date }
 ): Promise<ZernioPost[]> {
   const query = new URLSearchParams({ accountId: params.accountId });
   if (params.limit) query.set("limit", String(params.limit));
+  // Rodada 5, achado 3 (achado 10): confirmed list-posts query param
+  // (docs.zernio.com), date range in ISO 8601 — narrows the search to
+  // "since the claim moment (minus a little slack)" instead of scanning
+  // whatever page the API defaults to.
+  if (params.fromDate) query.set("fromDate", params.fromDate.toISOString());
   const result = await zernioRequest<{ posts: ZernioPost[] } | ZernioPost[]>({
     apiKey,
     path: `/posts?${query.toString()}`,
   });
   return Array.isArray(result) ? result : result.posts;
+}
+
+// --- Rodada 5, achado 5: TikTok creator-info -------------------------------
+
+export interface TikTokCreatorInfo {
+  creator: { nickname: string; isVerified: boolean; canPostMore: boolean };
+  privacyLevels: { value: string; label: string }[];
+  postingLimits: {
+    maxVideoDurationSec: number;
+    interactionSettings: Record<
+      "allow_comment" | "allow_duet" | "allow_stitch",
+      { enabled: boolean; required: boolean; default: boolean; label: string }
+    >;
+  };
+  commercialContentTypes: { value: string; label: string; requires?: string[] }[];
+}
+
+/**
+ * `GET /accounts/{accountId}/tiktok/creator-info` — confirmed to exist
+ * (docs.zernio.com/platforms/tiktok). `enabled: false` on an interaction
+ * setting means the creator turned that off in the TikTok app itself; the
+ * panel (app/api/scheduled-posts/tiktok-creator-info/route.ts) uses this to
+ * disable/force-false whichever toggle the creator has already turned off,
+ * rather than let a submit fail on TikTok's side with a confusing error.
+ */
+export async function getTikTokCreatorInfo(apiKey: string, accountId: string): Promise<TikTokCreatorInfo> {
+  return zernioRequest<TikTokCreatorInfo>({
+    apiKey,
+    path: `/accounts/${encodeURIComponent(accountId)}/tiktok/creator-info`,
+  });
 }

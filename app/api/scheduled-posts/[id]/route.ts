@@ -158,7 +158,12 @@ async function checkZernioRetrySafety(post: PostWithAccount): Promise<NextRespon
       );
     }
     const platformName = zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE");
-    const platformResult = remote.platforms.find((p) => p.platform === platformName) ?? remote.platforms[0];
+    // Rodada 5, achado 2: no `?? platforms[0]` — adopting an unrelated
+    // platform's result here would be exactly the "guess" this safety check
+    // exists to prevent. A missing/absent `platforms` array (achado 2) or a
+    // missing entry for our own platform both resolve to `undefined`, which
+    // applyZernioPlatformResult treats as "pending" below (can't confirm).
+    const platformResult = (remote.platforms ?? []).find((p) => p.platform === platformName);
     const outcome = await applyZernioPlatformResult(
       prisma,
       post,
@@ -280,6 +285,13 @@ export async function PATCH(request: NextRequest, { params }: RouteProps) {
       // would then never learn the id of. Harmless to also reset for an
       // Instagram row (always already null there).
       zernioPostId: null,
+      // Rodada 5, achado 2: without this, the NEXT claim into PUBLISHING
+      // would keep this attempt's now-24h-stale idempotency key — Zernio
+      // would replay the OLD (dead) response instead of actually posting
+      // again. Clearing it here forces publishZernioReadyPosts to generate a
+      // fresh one on its next claim.
+      zernioIdempotencyKey: null,
+      claimedAt: null,
       outcomeUncertain: false,
     });
     if (updated.count === 0) {
@@ -329,6 +341,11 @@ export async function PATCH(request: NextRequest, { params }: RouteProps) {
           childContainerIds: [],
           mediaId: null,
           zernioPostId: null,
+          // Rodada 5, achado 2: same reasoning as the retry branch above —
+          // rescheduling a FAILED post is also a retry, so it must not leave
+          // a stale, 24h-old idempotency key behind either.
+          zernioIdempotencyKey: null,
+          claimedAt: null,
           outcomeUncertain: false,
         }
       : {}),
