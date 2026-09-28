@@ -168,3 +168,91 @@ em vez de tratar silenciosamente como "nada agendado ainda" (bug antigo).
   estiver vazio, comparando com `timingSafeEqual`.
 - Cancelar/excluir um post agendado só funciona a partir de SCHEDULED/PREPARING,
   com `updateMany`/`deleteMany` condicional (não `update`/`delete` direto).
+
+## Rodada 3 (segunda revisão adversarial — "sem bloqueador", mas 5 achados "corrigir logo" + 6 menores)
+
+Reproduções em `scratchpad/ares/r2.test.ts` (cenários R1-R4) viraram testes reais
+em `__tests__/scheduled-posts-double-publish.test.ts`.
+
+### 1 — Retry/reagendar de um FAILED com resultado incerto (R3)
+`ScheduledPost` ganhou `outcomeUncertain Boolean` (mesma migration
+`20260927170000`, ainda não aplicada em lugar nenhum). O motor grava
+`outcomeUncertain: true` só quando genuinamente não dá pra confirmar se a Meta
+publicou (reconciliação de PUBLISHING que fica 30+min sem conseguir consultar
+o status) — nunca no caminho "container nunca chegou a FINISHED" (esse é
+seguro de recriar do zero). `app/api/scheduled-posts/[id]/route.ts` (retry e
+reagendar-como-retry) chama `getContainerStatus` no container antigo antes de
+zerar qualquer coisa: `PUBLISHED` → reconcilia (reusa
+`reconcilePublishedContainer`, exportado do motor) e recusa o retry;
+consulta falhou → `409` com `outcomeUncertain: true` pedindo confirmação
+manual; qualquer outro status → confirma que não foi publicado, libera o
+retry normal. `force: true` no corpo pula a checagem. A tela mostra o aviso e
+troca "Tentar de novo" por "Já conferi, publicar de novo" (que manda `force`).
+
+### 2 — Lock perdido em silêncio (R4)
+`lib/scheduled-posts/advisory-lock.ts`: `client.on("error")` marca a conexão
+como perdida e o handle passa a expor `isHeld()`. O motor confere `isHeld()`
+antes de cada criação de container e de cada `media_publish`, abortando o
+resto do tick (`LockLostError`, capturada uma vez em
+`runPublishScheduledCron`) se o lock caiu. Mais importante na prática:
+`markFailed`/`handleContainerFailure` passaram a casar por **status exato**
+(não mais `{in:[PREPARING,PUBLISHING]}`) mais `containerId` — assim, mesmo
+sem lock nenhum (R4 testa exatamente esse cenário, dois ticks rodando de
+verdade em paralelo), uma chamada de `markFailed` com um snapshot velho vira
+no-op em vez de sobrescrever o status que outro tick já publicou.
+
+### 3 — Corrida no dedup (`POST /api/scheduled-posts`)
+O check-then-create virou uma `prisma.$transaction` com
+`pg_advisory_xact_lock(hashtext(instagramAccountId))` logo no início —
+serializa criações concorrentes do MESMO conteúdo na MESMA conta (contas
+diferentes nunca se bloqueiam), liberado automaticamente ao fim da
+transação. `force: true` continua pulando a checagem, mas dentro do mesmo
+lock. Testado com um fake `$transaction`/`$executeRaw` que simula filas por
+chave, replicando o comportamento real do Postgres.
+
+### 4 — Varredura de órfãos apagava arquivo de post ainda dentro da retenção (R2)
+`cleanupOrphanFiles` passou a considerar "referenciado" o `storagePaths`/
+`coverPath` de **qualquer** `ScheduledPost`, não só SCHEDULED/PREPARING/
+PUBLISHING — como `cleanupPublishedFiles`/`cleanupAbandonedFiles` já zeram
+esses campos assim que a própria retenção (24h/7 dias) vence, e rodam antes
+no mesmo tick, o efeito final é idêntico ao pedido ("PUBLISHED <24h ou
+FAILED/CANCELED <7 dias contam como referenciados") só que sem duplicar a
+lógica de idade em dois lugares. Retry/reagendar agora exigem que todo
+`storagePaths`/`coverPath` ainda exista em disco (`409` com "arquivo
+expirou" se não). `cleanupFilesFor` passou a limpar os campos com
+`updateMany` guardado pelo status exato que a própria busca encontrou (não
+`update` incondicional), pra nunca zerar os arquivos de um post que foi
+reagendado bem no meio da limpeza.
+
+### 5 — Índice do `contentHash` divergia da migration
+`prisma/schema.prisma` estava com `@@index([contentHash])` (BTree implícito);
+a migration já usava `USING GIN` manualmente. Corrigido para
+`@@index([contentHash], type: Gin)`. Conferido com
+`npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script`:
+a única linha de índice de `contentHash` gerada bate exatamente com a da
+migration (`CREATE INDEX "ScheduledPost_contentHash_idx" ON "ScheduledPost"
+USING GIN ("contentHash");`).
+
+### 6 — Reconciliação por legenda sem janela de tempo (R1)
+`reconcilePublishedContainer` (motor) só aceita um candidato do
+`listRecentMedia` cujo `timestamp` seja `>= updatedAt do claim - 2min`. Com
+legenda preenchida, ainda exige exatamente 1 candidato dentro da janela;
+legenda vazia nunca casa por legenda — só aceita um único candidato na janela
+por timestamp puro. Sem candidato válido, o post ainda é marcado PUBLISHED
+(recriar seria pior), mas com `mediaId: null` e alerta por e-mail.
+
+### Menores (6/6)
+- Cancelar volta a aceitar FAILED (a UI já mostrava o botão; a API dava 409
+  sempre) — libera o `contentHash` pra reagendar o mesmo conteúdo.
+- Upload confere os bytes mágicos do primeiro chunk (`FF D8 FF` pra JPEG,
+  `ftyp` no offset 4 pra MP4) contra o `content-type` declarado; divergência
+  ou arquivo curto demais pra checar = `415` e apaga o `.tmp-*`.
+- Limite de upload caiu de 200MB pra 100MB (já cobre um Reels de 90s em
+  1080p) depois de um upload lento perto do teto antigo bater no timeout de
+  ~300s do proxy reverso antes de terminar o stream; `agendar-lote` avisa
+  antes de subir qualquer arquivo acima de 100MB.
+- `.tmp-*` abandonado (upload que nunca terminou) é varrido depois de 1h,
+  bem antes da regra de 48h dos arquivos órfãos normais — nenhuma linha do
+  banco pode referenciar um nome `.tmp-*` de qualquer forma.
+- `lib/email/alert.ts` usa `AbortSignal.timeout(10_000)` no fetch da Resend,
+  pra um alerta travado nunca travar o tick do cron que o disparou.
