@@ -397,6 +397,15 @@ async function main() {
 
       const storagePaths: string[] = [];
       for (const file of plan.files) {
+        // Rodada 3, achado 9: the upload endpoint caps at 100MB and a slow
+        // connection can hit the reverse proxy's own timeout well before
+        // that — warn instead of finding out from a failed upload.
+        const sizeMb = fs.statSync(file).size / (1024 * 1024);
+        if (sizeMb > 100) {
+          console.warn(
+            `[agendar-lote] aviso: ${path.basename(file)} tem ${sizeMb.toFixed(0)}MB — acima de 100MB pode estourar o limite do upload ou o timeout numa conexão lenta.`
+          );
+        }
         storagePaths.push(await uploadFile(paineluUrl!, schedulerToken!, file, contentTypeFor(file)));
       }
 
