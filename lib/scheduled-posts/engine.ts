@@ -13,8 +13,24 @@ import {
   publishMediaContainer,
   type ContainerStatusCode,
 } from "@/lib/meta/client";
+import {
+  createZernioPost,
+  getZernioPost,
+  listZernioPosts,
+  type TikTokSettingsPayload,
+  type YoutubePlatformSpecificData,
+  type ZernioPlatformName,
+  type ZernioPost,
+} from "@/lib/zernio/client";
+import { getZernioApiKey } from "@/lib/env";
+import { tikTokSettingsSchema, youtubeSettingsSchema } from "@/lib/scheduled-posts/schema";
 import { deleteMediaFiles, listMediaFiles } from "@/lib/storage/media";
-import { sendPublishFailureAlert, sendPublishWarningAlert } from "@/lib/email/alert";
+import {
+  sendPublishFailureAlert,
+  sendPublishWarningAlert,
+  sendZernioPublishFailureAlert,
+  sendZernioPublishWarningAlert,
+} from "@/lib/email/alert";
 import { withAdvisoryLock, type LockHandle, type LockResult } from "@/lib/scheduled-posts/advisory-lock";
 import type {
   InstagramProvider,
@@ -158,6 +174,22 @@ interface AccountForPublish {
   accessToken: string;
   instagramId: string;
   username: string;
+}
+
+/**
+ * Fase 4 made `ScheduledPost.instagramAccountId` optional (a TIKTOK/YOUTUBE
+ * row has none), so Prisma's generated type for `include: { instagramAccount:
+ * true }` is now `InstagramAccount | null` everywhere, including in the four
+ * Instagram-only queries below — each of which already filters
+ * `platform: "INSTAGRAM"` in its `where`, which the database's own CHECK
+ * constraint (prisma/migrations/20260928120000_zernio_platforms) guarantees
+ * always has a non-null instagramAccountId. This narrows the type back to
+ * match that runtime guarantee instead of sprinkling `!` at every call site.
+ */
+function withInstagramAccount<T extends { instagramAccount: AccountForPublish | null }>(
+  rows: T[]
+): (T & { instagramAccount: AccountForPublish })[] {
+  return rows.map((row) => ({ ...row, instagramAccount: row.instagramAccount as AccountForPublish }));
 }
 
 export interface PostForPublish {
@@ -483,12 +515,14 @@ async function prepareDuePosts(
 ): Promise<void> {
   const cutoff = new Date(now.getTime() + PREPARE_WINDOW_MS);
 
-  const due = await tx.scheduledPost.findMany({
-    where: { status: "SCHEDULED", scheduledFor: { lte: cutoff } },
-    include: { instagramAccount: true },
-    take: MAX_PREPARE_PER_TICK,
-    orderBy: { scheduledFor: "asc" },
-  });
+  const due = withInstagramAccount(
+    await tx.scheduledPost.findMany({
+      where: { status: "SCHEDULED", platform: "INSTAGRAM", scheduledFor: { lte: cutoff } },
+      include: { instagramAccount: true },
+      take: MAX_PREPARE_PER_TICK,
+      orderBy: { scheduledFor: "asc" },
+    })
+  );
 
   for (const post of due) {
     // Conditional claim: only one overlapping cron tick moves a given post
@@ -553,12 +587,14 @@ async function publishReadyPosts(
   result: PublishScheduledResult,
   lock: LockHandle
 ): Promise<void> {
-  const preparing = await tx.scheduledPost.findMany({
-    where: { status: "PREPARING", scheduledFor: { lte: now }, mediaId: null },
-    include: { instagramAccount: true },
-    take: MAX_PUBLISH_PER_TICK,
-    orderBy: { scheduledFor: "asc" },
-  });
+  const preparing = withInstagramAccount(
+    await tx.scheduledPost.findMany({
+      where: { status: "PREPARING", platform: "INSTAGRAM", scheduledFor: { lte: now }, mediaId: null },
+      include: { instagramAccount: true },
+      take: MAX_PUBLISH_PER_TICK,
+      orderBy: { scheduledFor: "asc" },
+    })
+  );
 
   for (const post of preparing) {
     if (post.instagramAccount.provider !== "META") {
@@ -729,6 +765,234 @@ async function publishReadyPosts(
   }
 }
 
+// --- Phase 2b: publish (TIKTOK/YOUTUBE via Zernio) --------------------------
+//
+// Fase 4. A different, simpler shape than the Instagram flow above: Zernio
+// has no separate "container" to prepare/poll ahead of time — a single
+// `POST /posts` (with `publishNow: true`) both creates and (usually,
+// TikTok took ~18s in testing) finishes the publish, so a due SCHEDULED row
+// goes straight to PUBLISHING, with no PREPARING step at all.
+
+/** Exported for reuse by app/api/scheduled-posts/[id]/route.ts's
+ * checkRetrySafety, which needs to pick out the right `platforms[]` entry
+ * from a `GET /posts/{id}` response the same way this module does. */
+export function zernioPlatformName(platform: "TIKTOK" | "YOUTUBE"): ZernioPlatformName {
+  return platform === "TIKTOK" ? "tiktok" : "youtube";
+}
+
+function zernioPlatformLabel(platform: "TIKTOK" | "YOUTUBE"): string {
+  return platform === "TIKTOK" ? "TikTok" : "YouTube Shorts";
+}
+
+function buildTikTokSettingsPayload(settings: Prisma.JsonValue): TikTokSettingsPayload {
+  const parsed = tikTokSettingsSchema.parse(settings);
+  return {
+    privacy_level: parsed.privacyLevel,
+    allow_comment: parsed.allowComment,
+    allow_duet: parsed.allowDuet,
+    allow_stitch: parsed.allowStitch,
+    // The single "revisei o conteúdo e concordo com a Music Usage
+    // Confirmation" checkbox in the panel feeds both TikTok fields.
+    content_preview_confirmed: parsed.consentGiven,
+    express_consent_given: parsed.consentGiven,
+  };
+}
+
+function buildYoutubeSpecificDataPayload(settings: Prisma.JsonValue): YoutubePlatformSpecificData {
+  const parsed = youtubeSettingsSchema.parse(settings);
+  return { title: parsed.title, visibility: parsed.visibility, madeForKids: parsed.madeForKids };
+}
+
+/**
+ * Same shape as `markFailed` above (guarded exact-status + a one-way-call
+ * identifier — `zernioPostId` here instead of `containerId`), for the same
+ * reason: a stale tick that reads this row long before it fails it must not
+ * clobber a status/zernioPostId a newer tick already moved the row past.
+ */
+async function markZernioFailed(
+  tx: Db,
+  post: Pick<
+    Prisma.ScheduledPostGetPayload<object>,
+    "id" | "workspaceId" | "platform" | "zernioPostId" | "attempts"
+  >,
+  message: string,
+  attempts: number,
+  result: PublishScheduledResult,
+  fromStatus: ScheduledPostStatus,
+  outcomeUncertain = false
+): Promise<void> {
+  const updated = await tx.scheduledPost.updateMany({
+    where: { id: post.id, status: fromStatus, zernioPostId: post.zernioPostId },
+    data: { status: "FAILED", errorMessage: message, attempts, outcomeUncertain },
+  });
+  if (updated.count === 0) return;
+
+  result.failed += 1;
+  await sendZernioPublishFailureAlert({
+    workspaceId: post.workspaceId,
+    scheduledPostId: post.id,
+    platform: zernioPlatformLabel(post.platform as "TIKTOK" | "YOUTUBE"),
+    errorMessage: message,
+  });
+}
+
+/**
+ * Applies the `platforms[]` entry from a fresh `POST /posts`/`GET
+ * /posts/{id}` response to the row — shared by the initial publish call, the
+ * polling reconciliation below, AND `checkRetrySafety` in
+ * app/api/scheduled-posts/[id]/route.ts (which calls this with
+ * `fromStatus: "FAILED"` the same way Instagram's own
+ * `reconcilePublishedContainer` is reused there), since all three see the
+ * same response shape and must resolve it the same way.
+ */
+export async function applyZernioPlatformResult(
+  tx: Db,
+  post: Prisma.ScheduledPostGetPayload<object>,
+  zernioPostId: string,
+  platformResult: ZernioPost["platforms"][number] | undefined,
+  now: Date,
+  result: PublishScheduledResult,
+  fromStatus: ScheduledPostStatus = "PUBLISHING"
+): Promise<"published" | "failed" | "pending"> {
+  if (platformResult?.status === "published") {
+    const updated = await tx.scheduledPost.updateMany({
+      where: { id: post.id, status: fromStatus, zernioPostId },
+      data: {
+        status: "PUBLISHED",
+        permalink: platformResult.platformPostUrl,
+        publishedAt: now,
+        errorMessage: null,
+      },
+    });
+    if (updated.count === 1) result.published += 1;
+    return "published";
+  }
+
+  if (platformResult?.status === "failed") {
+    await markZernioFailed(
+      tx,
+      { ...post, zernioPostId },
+      platformResult.errorMessage ?? "Falha reportada pela Zernio",
+      post.attempts + 1,
+      result,
+      fromStatus
+    );
+    return "failed";
+  }
+
+  return "pending"; // still processing — reconcileZernioPublishing polls it next tick(s)
+}
+
+async function publishZernioReadyPosts(
+  tx: Db,
+  now: Date,
+  result: PublishScheduledResult,
+  lock: LockHandle
+): Promise<void> {
+  const apiKey = getZernioApiKey();
+
+  const due = await tx.scheduledPost.findMany({
+    where: { status: "SCHEDULED", platform: { in: ["TIKTOK", "YOUTUBE"] }, scheduledFor: { lte: now } },
+    take: MAX_PUBLISH_PER_TICK,
+    orderBy: { scheduledFor: "asc" },
+  });
+
+  for (const post of due) {
+    // Conditional claim, mirroring prepareDuePosts's own claim for Instagram:
+    // only one overlapping tick moves a given post out of SCHEDULED.
+    const claimed = await tx.scheduledPost.updateMany({
+      where: { id: post.id, status: "SCHEDULED" },
+      data: { status: "PUBLISHING" },
+    });
+    if (claimed.count === 0) continue;
+
+    if (!apiKey || !post.zernioAccountId) {
+      await markZernioFailed(
+        tx,
+        post,
+        "Zernio não configurado (ZERNIO_API_KEY ou a conta da plataforma ausente no ambiente) — reconfigure e reagende.",
+        post.attempts + 1,
+        result,
+        "PUBLISHING"
+      );
+      continue;
+    }
+
+    let tiktokSettings: TikTokSettingsPayload | undefined;
+    let youtubeSpecificData: YoutubePlatformSpecificData | undefined;
+    try {
+      if (post.platform === "TIKTOK") tiktokSettings = buildTikTokSettingsPayload(post.platformSettings);
+      if (post.platform === "YOUTUBE") youtubeSpecificData = buildYoutubeSpecificDataPayload(post.platformSettings);
+    } catch (err) {
+      // Not transient (bad/missing platformSettings on the row itself) —
+      // straight to FAILED, same reasoning as decryptOrFail for Instagram.
+      const message = err instanceof Error ? err.message : String(err);
+      await markZernioFailed(tx, post, `Configuração da plataforma inválida: ${message}`, post.attempts + 1, result, "PUBLISHING");
+      continue;
+    }
+
+    if (!lock.isHeld()) {
+      console.warn(
+        `[Agendados] lock consultivo caiu — abortando antes de publicar (Zernio) o post ${post.id} (fica em PUBLISHING para reconciliação)`
+      );
+      throw new LockLostError();
+    }
+
+    // Stable per-attempt, not per-tick: a retry of THIS SAME attempt within
+    // Zernio's 24h/per-credential idempotency window replays the original
+    // response instead of posting twice; a genuinely new attempt (after a
+    // human-confirmed retry bumps `attempts`) gets a fresh key.
+    const idempotencyKey = `sp-${post.id}-${post.attempts}`;
+
+    let zpost: ZernioPost;
+    try {
+      zpost = await createZernioPost(
+        apiKey,
+        {
+          content: post.caption,
+          mediaUrl: post.mediaUrls[0],
+          platform: zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE"),
+          accountId: post.zernioAccountId,
+          tiktokSettings,
+          youtubeSpecificData,
+        },
+        idempotencyKey
+      );
+    } catch (err) {
+      if (isExplicit4xxMetaError(err)) {
+        // A clean, synchronous rejection from Zernio itself, before it ever
+        // dispatched to TikTok/YouTube — certain nothing was posted.
+        const message = err instanceof Error ? err.message : String(err);
+        await markZernioFailed(tx, post, message, post.attempts + 1, result, "PUBLISHING");
+      } else {
+        // Network error, timeout, 5xx, invalid JSON: ambiguous — the POST
+        // may have landed on Zernio's side despite the error. Never repeat
+        // it; leave the row in PUBLISHING (no zernioPostId), resolved later
+        // by reconcileZernioPublishing's list-based search.
+        console.warn(
+          `[Agendados] POST /posts (Zernio) ambíguo para post ${post.id} (mantido em PUBLISHING p/ reconciliação):`,
+          err instanceof Error ? err.message : err
+        );
+      }
+      continue;
+    }
+
+    // zernioPostId gravado IMEDIATAMENTE — before even looking at whether
+    // TikTok/YouTube itself finished publishing — so no later tick can ever
+    // call POST /posts again for this row.
+    const claimedId = await tx.scheduledPost.updateMany({
+      where: { id: post.id, status: "PUBLISHING", zernioPostId: null },
+      data: { zernioPostId: zpost._id },
+    });
+    if (claimedId.count === 0) continue; // a stale tick — another already resolved this row
+
+    const platformResult =
+      zpost.platforms.find((p) => p.platform === zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE")) ??
+      zpost.platforms[0];
+    await applyZernioPlatformResult(tx, post, zpost._id, platformResult, now, result);
+  }
+}
+
 /** PUBLISHED rows missing a permalink (the fetch after media_publish failed)
  * get one retry per tick — best-effort, never blocks anything else. */
 async function backfillMissingPermalinks(
@@ -737,11 +1001,13 @@ async function backfillMissingPermalinks(
   result: PublishScheduledResult
 ): Promise<void> {
   const cutoff = new Date(now.getTime() - CLEANUP_PUBLISHED_AFTER_MS);
-  const missing = await tx.scheduledPost.findMany({
-    where: { status: "PUBLISHED", mediaId: { not: null }, permalink: null, publishedAt: { gte: cutoff } },
-    include: { instagramAccount: true },
-    take: 10,
-  });
+  const missing = withInstagramAccount(
+    await tx.scheduledPost.findMany({
+      where: { status: "PUBLISHED", platform: "INSTAGRAM", mediaId: { not: null }, permalink: null, publishedAt: { gte: cutoff } },
+      include: { instagramAccount: true },
+      take: 10,
+    })
+  );
 
   for (const post of missing) {
     if (post.instagramAccount.provider !== "META" || !post.mediaId) continue;
@@ -788,11 +1054,13 @@ async function reconcileStuckPublishing(
   result: PublishScheduledResult
 ): Promise<void> {
   const staleBefore = new Date(now.getTime() - RECONCILE_STUCK_PUBLISHING_AFTER_MS);
-  const stuck = await tx.scheduledPost.findMany({
-    where: { status: "PUBLISHING", updatedAt: { lte: staleBefore } },
-    include: { instagramAccount: true },
-    take: 20,
-  });
+  const stuck = withInstagramAccount(
+    await tx.scheduledPost.findMany({
+      where: { status: "PUBLISHING", platform: "INSTAGRAM", updatedAt: { lte: staleBefore } },
+      include: { instagramAccount: true },
+      take: 20,
+    })
+  );
 
   for (const post of stuck) {
     if (!post.containerId) {
@@ -858,6 +1126,180 @@ async function reconcileStuckPublishing(
   }
 }
 
+// --- Phase 3b: reconcile PUBLISHING rows (TIKTOK/YOUTUBE via Zernio) -------
+
+/**
+ * A row with no `zernioPostId` can only mean the `POST /posts` call itself
+ * was ambiguous (publishZernioReadyPosts left it in PUBLISHING without one).
+ * There is no container to poll here — the only way back is `GET /posts`
+ * (list), matched by content + media URL + the same claim-moment time
+ * window Instagram's own reconciliation uses (RECONCILE_MATCH_SLACK_MS).
+ * Not verified against the real Zernio API (see lib/zernio/client.ts) —
+ * every failure mode (endpoint doesn't support this filter, unexpected
+ * shape, network error) is treated identically to "couldn't reconcile this
+ * tick", never as proof the post doesn't exist. Returns `true` once the row
+ * has been resolved (PUBLISHED or FAILED) — the caller stops treating it as
+ * stuck either way.
+ */
+/**
+ * Exported for reuse by `checkRetrySafety` in
+ * app/api/scheduled-posts/[id]/route.ts, the same way Instagram's
+ * `reconcilePublishedContainer` is — called there with `fromStatus:
+ * "FAILED"` instead of the cron's own "PUBLISHING", against a row that has
+ * no `zernioPostId` to poll directly.
+ */
+export async function reconcileZernioByList(
+  tx: Db,
+  post: Prisma.ScheduledPostGetPayload<object>,
+  apiKey: string,
+  now: Date,
+  result: PublishScheduledResult,
+  fromStatus: ScheduledPostStatus = "PUBLISHING"
+): Promise<"published" | "failed" | "pending"> {
+  if (!post.zernioAccountId) return "pending";
+
+  let list: ZernioPost[];
+  try {
+    list = await listZernioPosts(apiKey, { accountId: post.zernioAccountId, limit: 20 });
+  } catch (err) {
+    console.warn(`[Agendados] listZernioPosts falhou ao reconciliar o post ${post.id}:`, err);
+    return "pending";
+  }
+
+  const windowStartMs = post.updatedAt.getTime() - RECONCILE_MATCH_SLACK_MS;
+  const mediaUrl = post.mediaUrls[0];
+  const platformName = zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE");
+
+  const candidates = list.filter((p) => {
+    const createdMs = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
+    if (!Number.isFinite(createdMs) || createdMs < windowStartMs) return false;
+    const contentMatches = (p.content ?? "") === post.caption;
+    const mediaMatches = (p.mediaItems ?? []).some((m) => m.url === mediaUrl);
+    return contentMatches && mediaMatches;
+  });
+  // 0 candidates: not found (yet, or ever — Zernio's own retention on this
+  // listing is unknown). 2+: ambiguous, same as Instagram's own reconcile —
+  // safer to keep waiting than to guess. Either way, not resolved this tick.
+  if (candidates.length !== 1) return "pending";
+
+  const match = candidates[0];
+  const platformResult = match.platforms.find((p) => p.platform === platformName) ?? match.platforms[0];
+  // Found the post, but its own platform status is itself still unresolved
+  // — nothing to adopt yet, try again next tick.
+  if (!platformResult || (platformResult.status !== "published" && platformResult.status !== "failed")) {
+    return "pending";
+  }
+
+  // Adopt the found id now, so a future tick (if this one's write below
+  // somehow doesn't land) can poll it directly instead of re-running this
+  // fuzzier search.
+  const claimedId = await tx.scheduledPost.updateMany({
+    where: { id: post.id, status: fromStatus, zernioPostId: null },
+    data: { zernioPostId: match._id },
+  });
+  if (claimedId.count === 0) return platformResult.status; // another caller already resolved it
+
+  const outcome = await applyZernioPlatformResult(tx, post, match._id, platformResult, now, result, fromStatus);
+  result.reconciled += 1;
+
+  // This recovery path is fuzzier than a direct zernioPostId poll (content +
+  // media URL + time window, not an exact id) — worth a human's sanity
+  // check even though the row is no longer stuck.
+  await sendZernioPublishWarningAlert({
+    workspaceId: post.workspaceId,
+    scheduledPostId: post.id,
+    platform: zernioPlatformLabel(post.platform as "TIKTOK" | "YOUTUBE"),
+    message:
+      "Resultado recuperado por busca na listagem da Zernio (a resposta do POST original tinha se perdido) — confira se está correto.",
+  });
+
+  return outcome;
+}
+
+/**
+ * Every PUBLISHING row for TIKTOK/YOUTUBE, every tick — unlike Instagram's
+ * `reconcileStuckPublishing`, this is not gated by a staleness window at the
+ * top: Zernio resolves most posts within seconds to a couple of minutes
+ * (TikTok took ~18s in testing), so polling promptly matters. A row that
+ * genuinely cannot be resolved (Zernio itself stuck, or the ambiguous-POST
+ * case never turning up in the list search) only escalates to
+ * FAILED+outcomeUncertain — same threshold and same reasoning as Instagram's
+ * own "consulta seguiu falhando" branch — once it has been stuck for
+ * `STUCK_POLLING_THRESHOLD_MS`.
+ */
+async function reconcileZernioPublishing(tx: Db, now: Date, result: PublishScheduledResult): Promise<void> {
+  const publishing = await tx.scheduledPost.findMany({
+    where: { status: "PUBLISHING", platform: { in: ["TIKTOK", "YOUTUBE"] } },
+    take: 20,
+  });
+
+  const apiKey = getZernioApiKey();
+  if (!apiKey) return; // nothing to poll with; STUCK_POLLING_THRESHOLD_MS below still eventually escalates
+
+  for (const post of publishing) {
+    const stuckForMs = now.getTime() - post.updatedAt.getTime();
+
+    if (post.zernioPostId) {
+      try {
+        const remote = await getZernioPost(apiKey, post.zernioPostId);
+        const platformName = zernioPlatformName(post.platform as "TIKTOK" | "YOUTUBE");
+        const platformResult = remote.platforms.find((p) => p.platform === platformName) ?? remote.platforms[0];
+        const outcome = await applyZernioPlatformResult(tx, post, post.zernioPostId, platformResult, now, result);
+        if (outcome !== "pending") {
+          result.reconciled += 1;
+        } else if (stuckForMs >= STUCK_POLLING_THRESHOLD_MS) {
+          await markZernioFailed(
+            tx,
+            post,
+            `Preso em PUBLISHING (Zernio) além de 30+ minutos; último status: ${platformResult?.status ?? "desconhecido"}`,
+            post.attempts + 1,
+            result,
+            "PUBLISHING",
+            true
+          );
+        }
+      } catch (err) {
+        if (stuckForMs >= STUCK_POLLING_THRESHOLD_MS) {
+          const message = err instanceof Error ? err.message : String(err);
+          await markZernioFailed(
+            tx,
+            post,
+            `Consulta de status na Zernio falhou repetidamente por 30+ minutos: ${message}`,
+            post.attempts + 1,
+            result,
+            "PUBLISHING",
+            true
+          );
+        } else {
+          console.warn(`[Agendados] GET /posts/{id} (Zernio) falhou para o post ${post.id}, tentando de novo no próximo tick:`, err);
+        }
+      }
+      continue;
+    }
+
+    // No zernioPostId: the original POST was ambiguous. Try the fuzzier
+    // list-based recovery; only give up (FAILED + outcomeUncertain) once
+    // it's been stuck a long while with no confident match.
+    let outcome: "published" | "failed" | "pending" = "pending";
+    try {
+      outcome = await reconcileZernioByList(tx, post, apiKey, now, result);
+    } catch (err) {
+      console.warn(`[Agendados] reconciliação por listagem (Zernio) falhou para o post ${post.id}:`, err);
+    }
+    if (outcome === "pending" && stuckForMs >= STUCK_POLLING_THRESHOLD_MS) {
+      await markZernioFailed(
+        tx,
+        post,
+        "POST na Zernio ficou ambíguo (resposta original perdida) e não foi possível confirmar pela listagem depois de 30+ minutos",
+        post.attempts + 1,
+        result,
+        "PUBLISHING",
+        true
+      );
+    }
+  }
+}
+
 // --- Phase 4: disk cleanup ---------------------------------------------------
 
 async function cleanupPublishedFiles(tx: Db, now: Date, result: PublishScheduledResult): Promise<void> {
@@ -892,7 +1334,34 @@ async function cleanupFilesFor(
   for (const post of toClean) {
     const filenames = [...post.storagePaths, ...(post.coverPath ? [post.coverPath] : [])];
     try {
-      await deleteMediaFiles(filenames);
+      // Fase 4: the same uploaded file can now be named by more than one
+      // ScheduledPost row — one per destination platform, all created from
+      // the same upload in the "Novo post" form/CLI batch. Only unlink a
+      // filename from disk once no OTHER row (any status, any platform)
+      // still names it; a still-referenced filename just has THIS post's own
+      // pointer cleared below, exactly as before Fase 4. (The scenario this
+      // closes: an Instagram post published 2 days ago and a TikTok post of
+      // the same file scheduled for tomorrow — the Instagram row's own 24h
+      // retention is up, but the file must survive until TikTok publishes
+      // and its own retention passes too.)
+      const stillReferencedBy =
+        filenames.length === 0
+          ? []
+          : await tx.scheduledPost.findMany({
+              where: {
+                id: { not: post.id },
+                OR: [{ storagePaths: { hasSome: filenames } }, { coverPath: { in: filenames } }],
+              },
+              select: { storagePaths: true, coverPath: true },
+            });
+      const stillProtected = new Set<string>();
+      for (const other of stillReferencedBy) {
+        for (const f of other.storagePaths) if (filenames.includes(f)) stillProtected.add(f);
+        if (other.coverPath && filenames.includes(other.coverPath)) stillProtected.add(other.coverPath);
+      }
+      const toDelete = filenames.filter((f) => !stillProtected.has(f));
+      if (toDelete.length > 0) await deleteMediaFiles(toDelete);
+
       // Guarded by the exact status this query just found the row in
       // (Rodada 3, achado 4): a post retried/rescheduled between the read
       // above and this write is no longer PUBLISHED/FAILED/CANCELED, so this
@@ -962,7 +1431,9 @@ export async function runPublishScheduledCron(
     try {
       await prepareDuePosts(prisma, now, result, lock);
       await publishReadyPosts(prisma, now, result, lock);
+      await publishZernioReadyPosts(prisma, now, result, lock);
       await reconcileStuckPublishing(prisma, now, result);
+      await reconcileZernioPublishing(prisma, now, result);
       await backfillMissingPermalinks(prisma, now, result);
       await cleanupPublishedFiles(prisma, now, result);
       await cleanupAbandonedFiles(prisma, now, result);
