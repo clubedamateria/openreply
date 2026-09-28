@@ -256,3 +256,171 @@ por timestamp puro. Sem candidato válido, o post ainda é marcado PUBLISHED
   banco pode referenciar um nome `.tmp-*` de qualquer forma.
 - `lib/email/alert.ts` usa `AbortSignal.timeout(10_000)` no fetch da Resend,
   pra um alerta travado nunca travar o tick do cron que o disparou.
+
+## Fase 4: TikTok e YouTube Shorts via Zernio (2026-09-28)
+
+Pedido do coordenador: acrescentar TikTok e YouTube Shorts como destinos do
+Agendados, publicando pelo [Zernio](https://zernio.com) (`https://zernio.com/api/v1`,
+`Authorization: Bearer $ZERNIO_API_KEY`) — o mesmo repo, a mesma branch `deploy`, a
+Rodada 3 já em produção (`1a393b7`). Explicitamente **não** é o `ZernioConnection` do
+banco nem o fluxo de Configurações (esse é o webhook de inbox do Instagram, outro caso
+de uso) — só reaproveitado o helper HTTP de baixo nível (`zernioRequest`) de
+`lib/zernio/client.ts`.
+
+### O que a API do Zernio confirmou
+
+- `GET /accounts` → `[{_id, platform: "tiktok"|"youtube", username, displayName,
+  profileId, isActive}]`. Conta TikTok do Clube `6aba6d01acc350b0ac4a845c`, YouTube
+  `6aba6d8c3973c2c3f0277733`.
+- `POST /posts` **verificado de verdade contra o TikTok** (publicou em ~18s):
+  ```json
+  {"content":"...","mediaItems":[{"type":"video","url":"<url pública>"}],
+   "platforms":[{"platform":"tiktok","accountId":"..."}],
+   "tiktokSettings":{"privacy_level":"PUBLIC_TO_EVERYONE","allow_comment":true,
+     "allow_duet":true,"allow_stitch":true,"content_preview_confirmed":true,
+     "express_consent_given":true},
+   "publishNow":true}
+  ```
+  Resposta: `{"post":{"_id","status":"published","platforms":[{"status":"published",
+  "platformPostId":"...","platformPostUrl":null,"errorMessage":null,"publishedAt"}]}}`
+  — `platformPostUrl` chega `null` na resposta do `POST`; `GET /posts/{id}` é quem
+  eventualmente traz a URL final.
+- **YouTube — o que a doc (`docs.zernio.com/platforms/youtube`) diz, nunca testado
+  contra a API de verdade**: o corpo do `POST /posts` para YouTube usa
+  `platforms[0].platformSpecificData` (não um `youtubeSettings` de nível raiz como o
+  TikTok) com os campos `title` (obrigatório), `visibility`
+  (`"public"|"unlisted"|"private"`) e `madeForKids` (booleano, sem valor implícito —
+  é o campo que satisfaz a obrigação legal do COPPA do YouTube). Isso ficou
+  documentado como não-verificado em `lib/zernio/client.ts` — a primeira publicação
+  real no YouTube deve confirmar o shape antes de confiar cegamente nele.
+- **Idempotência (`docs.zernio.com/guides/idempotency`)**: o header
+  `Idempotency-Key` é escopado por credencial (API key) + endpoint, com janela de
+  24h — uma repetição da MESMA chave dentro da janela devolve a resposta original em
+  vez de criar um post novo; a checagem é só pela chave, não pelo corpo. Usado aqui
+  como `sp-${scheduledPostId}-${attempts}`: estável entre retentativas ambíguas da
+  MESMA tentativa (uma resposta perdida por rede não gera um post duplicado se o
+  processo tentar de novo), mas muda numa tentativa genuinamente nova (depois que um
+  humano confirma manualmente que a anterior falhou — o mesmo gate de
+  `checkRetrySafety` da Fase 3).
+- TikTok: conta Business (a única que o Zernio conecta) só aceita vídeo público de
+  verdade — `PUBLIC_TO_EVERYONE`, os outros três níveis de privacidade existem na API
+  mas o painel avisa que só funcionam numa conta Creator; limite de 15 vídeos/dia;
+  `content_preview_confirmed`/`express_consent_given` têm que vir de uma confirmação
+  humana explícita na UI, nunca de um default.
+- `GET /posts` (listagem, usada só na reconciliação de resposta perdida) **não tem a
+  forma confirmada** pela doc — só que "existe algum filtro". Tratado a fricho: toda
+  falha dela (404, formato inesperado, erro de rede) vira "não deu pra reconciliar
+  neste tick", nunca "o post não existe".
+
+### Modelo e migration
+
+`ScheduledPost` ganhou: `platform` (enum `INSTAGRAM|TIKTOK|YOUTUBE`, default
+`INSTAGRAM`), `instagramAccountId` virou opcional (`CHECK` garante que só é
+obrigatório quando `platform = 'INSTAGRAM'`), `zernioAccountId?` (`CHECK` garante que
+é obrigatório quando `platform <> 'INSTAGRAM'`), `zernioPostId?` (único quando
+presente — o equivalente ao `containerId`/`mediaId` do Instagram como identificador
+de chamada única), `platformSettings Json?` (o payload de TikTok/YouTube, validado
+pelos MESMOS schemas zod na escrita e na leitura), `permalink` passou a servir tanto
+o link do Instagram quanto o `platformPostUrl` do TikTok/YouTube. Migration nova em
+`prisma/migrations/20260928120000_zernio_platforms/` (a Rodada 3 já está aplicada em
+produção — nenhuma migration antiga foi tocada). Conferida como nas fases
+anteriores: `npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma
+--script` (sem depender de um banco local — o Postgres desta máquina é de outro
+projeto, `gupe`/`gupe_test`, deliberadamente não usado) e o `CREATE TABLE
+"ScheduledPost"`/índices novos gerados batem, coluna a coluna, com o SQL escrito à
+mão — o mesmo método usado para o índice GIN da Fase 3 (achado 5 acima).
+
+### Motor: publicar e reconciliar (Fase 2b/3b em `lib/scheduled-posts/engine.ts`)
+
+Zernio não tem um "container" pra preparar com antecedência como o Instagram — um
+único `POST /posts` (com `publishNow: true`) cria E, geralmente, termina a
+publicação (TikTok levou ~18s no teste real), então um post SCHEDULED devido vai
+direto pra PUBLISHING, sem etapa PREPARING. O mesmo rigor de publicação dupla da
+Fase 3 foi replicado 1:1, trocando `containerId` por `zernioPostId` como o
+identificador de chamada única: `updateMany` condicional por status exato pra
+reivindicar SCHEDULED→PUBLISHING; `zernioPostId` gravado IMEDIATAMENTE após a
+resposta do `POST /posts`, antes até de saber se o TikTok/YouTube já terminou —
+nenhum tick seguinte pode chamar `POST /posts` de novo pra essa linha; uma resposta
+ambígua (erro de rede, timeout, JSON inválido, 5xx) nunca é repetida — a linha fica
+em PUBLISHING sem `zernioPostId`, resolvida depois por uma busca em `GET /posts`
+(listagem) por conteúdo + URL da mídia + a mesma janela de tempo do momento do claim
+que a reconciliação do Instagram já usa; um 4xx explícito no `POST /posts` é FALHA
+certa, sem retentativa. Uma vez com `zernioPostId` conhecido, cada tick seguinte faz
+`GET /posts/{id}` até o status da própria plataforma virar `published` (grava
+`platformPostUrl`) ou `failed`; sem resolver depois de 30+ minutos (mesmo limiar do
+`STUCK_POLLING_THRESHOLD_MS` da Fase 3), escala pra FAILED com
+`outcomeUncertain: true` — o mesmo campo que trava um retry/reagendamento às cegas.
+`checkRetrySafety` em `app/api/scheduled-posts/[id]/route.ts` ganhou o espelho
+`checkZernioRetrySafety`, reusando `applyZernioPlatformResult`/
+`reconcileZernioByList` com `fromStatus: "FAILED"` — mesma lógica de "confere antes
+de deixar recriar" que o Instagram já tinha. Um retry/reagendamento zera
+`zernioPostId` no mesmo `PATCH` guardado — sem isso, o próximo `publishZernioReadyPosts`
+não conseguiria gravar o id novo (o guard é justamente `zernioPostId: null`) e
+recriaria um post real na Zernio sem o banco nunca aprender o id dele.
+
+### Arquivos compartilhados entre destinos
+
+O mesmo arquivo enviado pode agora ser nomeado por 2-3 `ScheduledPost` (um por
+destino, do mesmo lote/upload na UI ou no CLI). A limpeza de disco (`cleanupFilesFor`)
+passou a consultar, antes de apagar, se ALGUMA outra linha (qualquer status,
+qualquer plataforma) ainda referencia o mesmo nome de arquivo — só remove do disco
+os nomes que sobram depois disso; o ponteiro (`storagePaths`/`coverPath`) da linha
+sendo limpa é sempre zerado, como antes. Cenário de teste do pedido (replicado em
+`__tests__/scheduled-posts-zernio-engine.test.ts`): um post do Instagram publicado há
+2 dias (já fora da própria retenção de 24h) e um post do TikTok do MESMO arquivo
+agendado pra amanhã — o arquivo sobrevive porque o TikTok ainda o referencia.
+
+### UI, API e CLI
+
+- `POST /api/scheduled-posts`: `platform` (default INSTAGRAM); pra TIKTOK/YOUTUBE, o
+  `zernioAccountId` é resolvido no servidor a partir do env
+  (`getZernioAccountIdForPlatform`), nunca do corpo da requisição — um único par
+  fixo de contas por instância. O dedup por hash de conteúdo (e o lock que o
+  serializa) passou a ser escopado por `(platform, conta)`: o mesmo arquivo pode
+  legitimamente virar um post do Instagram E um do TikTok sem colidir.
+  `instagramAccountId`/`username` continuam obrigatórios em TODA plataforma — é a
+  "conta de contexto" que resolve o `workspaceId` mesmo quando quem publica de
+  verdade é a conta Zernio.
+- `GET /api/scheduled-posts/destinations`: expõe só `{tiktok: boolean, youtube:
+  boolean}` (se os envs existem) — o painel usa isso pra desabilitar os checkboxes
+  sem nunca vazar os IDs de conta.
+- "Novo post" (`components/scheduled-post-form.tsx`): checkboxes de destino, uma
+  linha por destino marcado no mesmo lote (mesmos arquivos/horário); ao marcar
+  TikTok/YouTube, o tipo de mídia trava em REELS (vídeo). Bloco TikTok: select de
+  privacidade SEM valor padrão (com aviso de que a conta Business só aceita
+  "Público"), toggles de comentário/dueto/costura, um checkbox de consentimento
+  único alimentando os dois campos booleanos do TikTok. Bloco YouTube: título
+  obrigatório (≤100, default = 1ª linha da legenda), select de visibilidade, "Feito
+  para crianças?" obrigatório sem padrão. Upload acontece uma vez só; um destino que
+  falhar não desfaz os que já agendaram — a tela mostra sucesso parcial e o que
+  falhou, sem navegar embora.
+- `/agendados`: ícone/rótulo por plataforma (lucide-react desta versão não tem ícones
+  de marca — `Camera` pro Instagram, `Music2` pro TikTok, `SquarePlay` pro YouTube),
+  filtro por plataforma, `@username` só quando a linha tem `instagramAccount` (agora
+  `null` numa linha TikTok/YouTube).
+- `scripts/agendar-lote.ts`: `--destinos instagram,tiktok,youtube` (default
+  `instagram`) publica o MESMO upload em um `POST /api/scheduled-posts` por destino.
+  TikTok exige `--tiktok-privacidade` (sem default) e `--tiktok-consentimento` (flag
+  — a ausência aborta o lote inteiro antes de subir qualquer arquivo, explicando por
+  quê); `--tiktok-sem-dueto`/`--tiktok-sem-costura` são opt-outs opcionais. YouTube
+  exige `--youtube-infantil sim|nao` (sem default); título vem de um
+  `<nome>-titulo.txt` irmão do arquivo, senão a 1ª linha da legenda cortada em 100
+  caracteres; `--youtube-visibilidade` default `public`. O dedup por hash pulado
+  passou a ser por (conta, destino) — um arquivo já agendado no Instagram ainda é
+  agendado no TikTok/YouTube se ainda não estiver lá.
+
+### Testes novos
+
+`__tests__/scheduled-posts-zernio-engine.test.ts` (publicação feliz TikTok/YouTube,
+resposta do `POST` perdida nunca repetida, reconciliação por `GET /posts/{id}` e por
+listagem com janela de tempo, 4xx imediato, escalonamento por 30+min, limpeza de
+arquivo compartilhado entre plataformas), `__tests__/scheduled-posts-schema.test.ts`
+(consentimento do TikTok sem default, privacidade fora do enum, `madeForKids` sem
+default, título do YouTube ≤100), `__tests__/scheduled-posts-create-dedup.test.ts`
+(um post do TikTok não colide com um do Instagram do mesmo conteúdo),
+`__tests__/agendar-lote.test.ts` (parsing de `--destinos`, validação agregada de
+`--tiktok-*`/`--youtube-*`, grade do `--dry-run` mostrando os destinos, e uma
+integração real de `main()` provando que só o destino faltante é agendado quando o
+outro já existe). `scripts/agendar-lote.ts` ganhou um guarda
+`import.meta.url === file://process.argv[1]` pra só rodar `main()` quando chamado
+direto — sem isso, importar o módulo num teste dispararia o CLI de verdade.
