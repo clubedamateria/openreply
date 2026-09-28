@@ -155,6 +155,127 @@ describe("createScheduledPostSchema", () => {
   });
 });
 
+describe("createScheduledPostSchema — Fase 4 (TIKTOK/YOUTUBE via Zernio)", () => {
+  it("defaults platform to INSTAGRAM when omitted", () => {
+    const result = createScheduledPostSchema.parse(validBase);
+    expect(result.platform).toBe("INSTAGRAM");
+  });
+
+  it("rejects TIKTOK without tiktokSettings", () => {
+    const result = createScheduledPostSchema.safeParse({ ...validBase, platform: "TIKTOK" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects YOUTUBE without youtubeSettings", () => {
+    const result = createScheduledPostSchema.safeParse({ ...validBase, platform: "YOUTUBE" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects TikTok consent left false — the checkbox has no default, silence is never consent", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      platform: "TIKTOK",
+      tiktokSettings: { privacyLevel: "PUBLIC_TO_EVERYONE", consentGiven: false },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a TikTok privacyLevel outside TikTok's own enum — no silent default", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      platform: "TIKTOK",
+      tiktokSettings: { privacyLevel: "EVERYONE", consentGiven: true },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a TikTok payload missing privacyLevel entirely (no schema-level default)", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      platform: "TIKTOK",
+      tiktokSettings: { consentGiven: true },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a valid TikTok payload, defaulting allowComment/allowDuet/allowStitch to true", () => {
+    const result = createScheduledPostSchema.parse({
+      ...validBase,
+      platform: "TIKTOK",
+      tiktokSettings: { privacyLevel: "SELF_ONLY", consentGiven: true },
+    });
+    expect(result.tiktokSettings).toMatchObject({
+      privacyLevel: "SELF_ONLY",
+      allowComment: true,
+      allowDuet: true,
+      allowStitch: true,
+      consentGiven: true,
+    });
+  });
+
+  it("rejects YouTube madeForKids left unset — COPPA has no safe default", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      platform: "YOUTUBE",
+      youtubeSettings: { title: "Um Reels sobre inglês", visibility: "public" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a YouTube title longer than 100 characters", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      platform: "YOUTUBE",
+      youtubeSettings: { title: "a".repeat(101), madeForKids: false },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a valid YouTube payload, defaulting visibility to public", () => {
+    const result = createScheduledPostSchema.parse({
+      ...validBase,
+      platform: "YOUTUBE",
+      youtubeSettings: { title: "Um Reels sobre inglês", madeForKids: false },
+    });
+    expect(result.youtubeSettings).toMatchObject({
+      title: "Um Reels sobre inglês",
+      visibility: "public",
+      madeForKids: false,
+    });
+  });
+
+  it("rejects TIKTOK/YOUTUBE with a non-REELS mediaType (video only, for now)", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      mediaType: "IMAGE",
+      storagePaths: [jpg(1)],
+      platform: "TIKTOK",
+      tiktokSettings: { privacyLevel: "PUBLIC_TO_EVERYONE", consentGiven: true },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects coverPath on a TIKTOK/YOUTUBE post (Instagram-only field)", () => {
+    const result = createScheduledPostSchema.safeParse({
+      ...validBase,
+      coverPath: jpg(9),
+      platform: "TIKTOK",
+      tiktokSettings: { privacyLevel: "PUBLIC_TO_EVERYONE", consentGiven: true },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("still requires instagramAccountId/username on a TIKTOK/YOUTUBE post (context account)", () => {
+    const withoutUsername: Record<string, unknown> = { ...validBase, platform: "TIKTOK" };
+    delete withoutUsername.username;
+    const result = createScheduledPostSchema.safeParse({
+      ...withoutUsername,
+      tiktokSettings: { privacyLevel: "PUBLIC_TO_EVERYONE", consentGiven: true },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe("isScheduledForTooFarInThePast", () => {
   it("is false for a time in the future", () => {
     expect(isScheduledForTooFarInThePast("2026-09-27T12:10:00.000Z", NOW)).toBe(false);

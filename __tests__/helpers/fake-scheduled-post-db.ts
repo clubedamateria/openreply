@@ -140,6 +140,35 @@ export function createFakeScheduledPostDb() {
   const sendPublishFailureAlert = vi.fn();
   const sendPublishWarningAlert = vi.fn();
 
+  // Fase 4: Zernio (TikTok/YouTube). Errors thrown by createZernioPost/
+  // getZernioPost/listZernioPosts in tests should be `new meta.MetaApiError(...)`
+  // with an httpStatus 400-499 to exercise `isExplicit4xxMetaError` — engine.ts
+  // imports `MetaApiError` from "@/lib/meta/client" (mocked here as `meta`), the
+  // SAME class Zernio's own `isExplicit4xxMetaError` check narrows on.
+  type FakeZernioPostPlatform = {
+    platform: string;
+    status: string;
+    platformPostId: string | null;
+    platformPostUrl: string | null;
+    errorMessage: string | null;
+  };
+  type FakeZernioPost = {
+    _id: string;
+    status: string;
+    platforms: FakeZernioPostPlatform[];
+    content?: string;
+    mediaItems?: { type?: string; url?: string }[];
+    createdAt?: string;
+  };
+  const zernio = {
+    createZernioPost: vi.fn<(...args: unknown[]) => Promise<FakeZernioPost>>(),
+    getZernioPost: vi.fn<(...args: unknown[]) => Promise<FakeZernioPost>>(),
+    listZernioPosts: vi.fn<(...args: unknown[]) => Promise<FakeZernioPost[]>>(async () => []),
+  };
+  const getZernioApiKey = vi.fn<() => string | null>(() => "zernio-key");
+  const sendZernioPublishFailureAlert = vi.fn();
+  const sendZernioPublishWarningAlert = vi.fn();
+
   return {
     rows,
     prisma,
@@ -150,6 +179,10 @@ export function createFakeScheduledPostDb() {
     listMediaFiles,
     sendPublishFailureAlert,
     sendPublishWarningAlert,
+    zernio,
+    getZernioApiKey,
+    sendZernioPublishFailureAlert,
+    sendZernioPublishWarningAlert,
     setNow: (d: Date) => {
       currentNow = d;
     },

@@ -42,6 +42,7 @@ function seed(overrides: Row = {}) {
   h.rows.set("p1", {
     id: "p1",
     workspaceId: "w",
+    platform: "INSTAGRAM",
     mediaType: "REELS",
     mediaUrls: ["https://media.local/v.mp4"],
     storagePaths: ["v.mp4"],
@@ -233,6 +234,7 @@ function seedR(id: string, overrides: Row = {}): void {
   h.rows.set(id, {
     id,
     workspaceId: "w",
+    platform: "INSTAGRAM",
     mediaType: "REELS",
     mediaUrls: [`https://media.local/${id}.mp4`],
     storagePaths: [`${id}.mp4`],

@@ -49,6 +49,13 @@ vi.mock("@/lib/storage/media", () => ({
   hashMediaFile: vi.fn(async (filename: string) => `hash-of-${filename}`),
   getMediaPublicUrl: vi.fn((filename: string) => `http://test.local/media/${filename}`),
 }));
+// Fase 4: the Zernio account is resolved server-side from env — fixed here
+// so TIKTOK/YOUTUBE posts in the dedup-scoping test below can be created.
+vi.mock("@/lib/env", () => ({
+  getZernioAccountIdForPlatform: vi.fn((platform: "TIKTOK" | "YOUTUBE") =>
+    platform === "TIKTOK" ? "zernio_tiktok_1" : "zernio_youtube_1"
+  ),
+}));
 
 const { POST } = await import("../app/api/scheduled-posts/route");
 
@@ -134,6 +141,43 @@ describe("POST /api/scheduled-posts — permanent dedup (bloqueador 3)", () => {
     );
 
     expect(res.status).toBe(201);
+  });
+
+  it("Fase 4: does not treat a TikTok post as a duplicate of an Instagram post with the same content (dedup scoped per platform+account)", async () => {
+    // The existing candidate is an INSTAGRAM row for the exact same file —
+    // the route's own `where` filters candidates by `platform`, so this
+    // mock only returns it when queried as INSTAGRAM, proving the TIKTOK
+    // create never even sees it as a candidate.
+    mockPrisma.scheduledPost.findMany.mockImplementation(
+      async ({ where }: { where: { platform?: string } }) =>
+        where.platform === "INSTAGRAM"
+          ? [{ id: "post_existing_ig", contentHash: [`hash-of-${mp4(1)}`] }]
+          : []
+    );
+
+    const res = await POST(
+      postRequest({
+        mediaType: "REELS",
+        storagePaths: [mp4(1)],
+        caption: "Legenda",
+        scheduledFor: FUTURE,
+        username: "conta",
+        platform: "TIKTOK",
+        tiktokSettings: { privacyLevel: "PUBLIC_TO_EVERYONE", consentGiven: true },
+      })
+    );
+
+    expect(res.status).toBe(201);
+    expect(mockPrisma.scheduledPost.create).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.scheduledPost.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          platform: "TIKTOK",
+          instagramAccountId: null,
+          zernioAccountId: "zernio_tiktok_1",
+        }),
+      })
+    );
   });
 
   it("bypasses the dedup check when force: true is sent", async () => {

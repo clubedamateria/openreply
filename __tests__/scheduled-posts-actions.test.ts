@@ -8,24 +8,43 @@ import { NextRequest } from "next/server";
  * still exist to retry; FAILED is cancelable again).
  */
 
-const { mockPrisma, mockGetWorkspaceId, mockDecryptToken, mockGetContainerStatus, mockReconcile, mockMediaFileExists } =
-  vi.hoisted(() => ({
-    mockPrisma: {
-      scheduledPost: { findFirst: vi.fn(), updateMany: vi.fn() },
-    },
-    mockGetWorkspaceId: vi.fn(async () => "ws_1" as string | null),
-    mockDecryptToken: vi.fn((token: string) => token),
-    mockGetContainerStatus: vi.fn(),
-    mockReconcile: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
-    mockMediaFileExists: vi.fn(async () => true),
-  }));
+const {
+  mockPrisma,
+  mockGetWorkspaceId,
+  mockDecryptToken,
+  mockGetContainerStatus,
+  mockReconcile,
+  mockMediaFileExists,
+  mockGetZernioPost,
+  mockApplyZernioPlatformResult,
+  mockReconcileZernioByList,
+  mockGetZernioApiKey,
+} = vi.hoisted(() => ({
+  mockPrisma: {
+    scheduledPost: { findFirst: vi.fn(), updateMany: vi.fn() },
+  },
+  mockGetWorkspaceId: vi.fn(async () => "ws_1" as string | null),
+  mockDecryptToken: vi.fn((token: string) => token),
+  mockGetContainerStatus: vi.fn(),
+  mockReconcile: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
+  mockMediaFileExists: vi.fn(async () => true),
+  mockGetZernioPost: vi.fn(),
+  mockApplyZernioPlatformResult: vi.fn<(...args: unknown[]) => Promise<"published" | "failed" | "pending">>(),
+  mockReconcileZernioByList: vi.fn<(...args: unknown[]) => Promise<"published" | "failed" | "pending">>(),
+  mockGetZernioApiKey: vi.fn<() => string | null>(() => "zernio-key"),
+}));
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/auth", () => ({ getCurrentWorkspaceId: mockGetWorkspaceId }));
 vi.mock("@/lib/meta/oauth", () => ({ decryptToken: mockDecryptToken }));
 vi.mock("@/lib/meta/client", () => ({ getContainerStatus: mockGetContainerStatus }));
+vi.mock("@/lib/zernio/client", () => ({ getZernioPost: mockGetZernioPost }));
+vi.mock("@/lib/env", () => ({ getZernioApiKey: mockGetZernioApiKey }));
 vi.mock("@/lib/scheduled-posts/engine", () => ({
   reconcilePublishedContainer: mockReconcile,
+  applyZernioPlatformResult: mockApplyZernioPlatformResult,
+  reconcileZernioByList: mockReconcileZernioByList,
+  zernioPlatformName: (platform: "TIKTOK" | "YOUTUBE") => (platform === "TIKTOK" ? "tiktok" : "youtube"),
   emptyResult: () => ({
     prepared: 0,
     published: 0,
@@ -52,8 +71,11 @@ function basePost(overrides: Record<string, unknown> = {}) {
   return {
     id: "p1",
     workspaceId: "ws_1",
+    platform: "INSTAGRAM",
     status: "FAILED",
     containerId: "C1",
+    zernioPostId: null,
+    zernioAccountId: null,
     outcomeUncertain: false,
     storagePaths: ["aaaaaaaaaaaaaaaa-aaaaaa.mp4"],
     coverPath: null,
@@ -73,6 +95,7 @@ beforeEach(() => {
   mockDecryptToken.mockImplementation((token: string) => token);
   mockMediaFileExists.mockResolvedValue(true);
   mockPrisma.scheduledPost.updateMany.mockResolvedValue({ count: 1 });
+  mockGetZernioApiKey.mockReturnValue("zernio-key");
 });
 
 describe("PATCH /api/scheduled-posts/[id] — cancel (Rodada 3, achado 7)", () => {

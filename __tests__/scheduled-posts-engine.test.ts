@@ -40,6 +40,7 @@ function scheduledPost(overrides: Row = {}): Row {
   return {
     id: "post_1",
     workspaceId: "ws_1",
+    platform: "INSTAGRAM",
     mediaType: "REELS",
     mediaUrls: ["https://media.local/video.mp4"],
     storagePaths: ["abc0123456789def-xxxxxx.mp4"],
