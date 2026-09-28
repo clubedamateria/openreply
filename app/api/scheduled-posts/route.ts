@@ -28,6 +28,11 @@ export interface ScheduledPostListItem {
   attempts: number;
   publishedAt: string | null;
   source: "PAINEL" | "LOTE";
+  /** Set on a FAILED row when the engine could not confirm whether Meta had
+   * already published it — see checkRetrySafety in
+   * app/api/scheduled-posts/[id]/route.ts. The panel shows a warning and
+   * requires an explicit `force` to retry/reschedule while this is true. */
+  outcomeUncertain: boolean;
 }
 
 export async function GET(request: NextRequest) {
@@ -88,6 +93,15 @@ function sameHashSet(a: string[], b: string[]): boolean {
   return a.every((h) => setB.has(h));
 }
 
+/** Thrown inside the transaction below to unwind to a 409 without writing
+ * anything — nothing has been created yet at that point, so there is
+ * nothing to roll back except the read itself. */
+class DuplicateContentError extends Error {
+  constructor(public readonly duplicateId: string) {
+    super("duplicate content");
+  }
+}
+
 export async function POST(request: NextRequest) {
   const actor = await resolveScheduledPostActor(request);
   if (!actor) {
@@ -146,47 +160,64 @@ export async function POST(request: NextRequest) {
   // lib/scheduled-posts/engine.ts's cleanupFilesFor).
   const contentHash = await Promise.all(input.storagePaths.map((filename) => hashMediaFile(filename)));
 
-  if (!input.force) {
-    // `hasSome` uses the GIN index as a coarse pre-filter; the exact-set
-    // comparison happens in application code since two posts can share one
-    // file (e.g. reused cover) without being the same set.
-    const candidates = await prisma.scheduledPost.findMany({
-      where: {
-        instagramAccountId: account.id,
-        status: { not: "CANCELED" },
-        contentHash: { hasSome: contentHash },
-      },
-      select: { id: true, contentHash: true },
+  // Rodada 3, achado 3: the check-then-create above was two separate
+  // statements, so two POSTs for the same content landing at the same time
+  // could both pass the check before either had created a row. A Postgres
+  // advisory xact-lock keyed by account id (released automatically when the
+  // transaction ends) serializes concurrent creates for that account —
+  // unrelated accounts never block each other. `force: true` still skips
+  // the dedup lookup, but stays inside the same transaction/lock so it can
+  // never race a non-force create for the same content.
+  try {
+    const scheduledPost = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${account.id}))`;
+
+      if (!input.force) {
+        // `hasSome` uses the GIN index as a coarse pre-filter; the exact-set
+        // comparison happens in application code since two posts can share
+        // one file (e.g. reused cover) without being the same set.
+        const candidates = await tx.scheduledPost.findMany({
+          where: {
+            instagramAccountId: account.id,
+            status: { not: "CANCELED" },
+            contentHash: { hasSome: contentHash },
+          },
+          select: { id: true, contentHash: true },
+        });
+        const duplicate = candidates.find((c) => sameHashSet(c.contentHash, contentHash));
+        if (duplicate) throw new DuplicateContentError(duplicate.id);
+      }
+
+      return tx.scheduledPost.create({
+        data: {
+          workspaceId: account.workspaceId,
+          instagramAccountId: account.id,
+          mediaType: input.mediaType,
+          storagePaths: input.storagePaths,
+          mediaUrls: input.storagePaths.map((filename) => getMediaPublicUrl(filename)),
+          coverPath: input.coverPath ?? null,
+          coverUrl: input.coverPath ? getMediaPublicUrl(input.coverPath) : null,
+          contentHash,
+          caption: input.caption,
+          shareToFeed: input.shareToFeed,
+          scheduledFor: new Date(input.scheduledFor),
+          source: actor.source,
+        },
+      });
     });
-    const duplicate = candidates.find((c) => sameHashSet(c.contentHash, contentHash));
-    if (duplicate) {
+
+    return NextResponse.json({ success: true, data: scheduledPost }, { status: 201 });
+  } catch (err) {
+    if (err instanceof DuplicateContentError) {
       return NextResponse.json(
         {
           success: false,
-          error: `Este conteúdo já está agendado (post ${duplicate.id}). Envie force: true para agendar mesmo assim.`,
-          duplicateId: duplicate.id,
+          error: `Este conteúdo já está agendado (post ${err.duplicateId}). Envie force: true para agendar mesmo assim.`,
+          duplicateId: err.duplicateId,
         },
         { status: 409 }
       );
     }
+    throw err;
   }
-
-  const scheduledPost = await prisma.scheduledPost.create({
-    data: {
-      workspaceId: account.workspaceId,
-      instagramAccountId: account.id,
-      mediaType: input.mediaType,
-      storagePaths: input.storagePaths,
-      mediaUrls: input.storagePaths.map((filename) => getMediaPublicUrl(filename)),
-      coverPath: input.coverPath ?? null,
-      coverUrl: input.coverPath ? getMediaPublicUrl(input.coverPath) : null,
-      contentHash,
-      caption: input.caption,
-      shareToFeed: input.shareToFeed,
-      scheduledFor: new Date(input.scheduledFor),
-      source: actor.source,
-    },
-  });
-
-  return NextResponse.json({ success: true, data: scheduledPost }, { status: 201 });
 }

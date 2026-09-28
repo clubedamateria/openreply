@@ -3,13 +3,44 @@ import { NextRequest } from "next/server";
 
 const mp4 = (n: number) => `${n.toString(16).padStart(16, "0")}-aaaaaa.mp4`;
 
+// Simulates Postgres's per-key `pg_advisory_xact_lock`: calls sharing the
+// same lock-key value queue up on a module-level chain, and only release
+// once the *whole* transaction callback that acquired the lock settles
+// (mirroring a real xact lock, released at COMMIT/ROLLBACK, not right after
+// the lock statement) — see the race test below (Rodada 3, achado 3).
+const lockChains = new Map<string, Promise<void>>();
+
 const { mockPrisma, mockActor } = vi.hoisted(() => ({
   mockPrisma: {
     instagramAccount: { findFirst: vi.fn() },
     scheduledPost: { findMany: vi.fn(), create: vi.fn() },
+    $transaction: vi.fn(),
+    $executeRaw: vi.fn(),
   },
   mockActor: vi.fn(async () => ({ source: "LOTE" as const })),
 }));
+
+mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => unknown) => {
+  const lockState: { release: (() => void) | null } = { release: null };
+  const txExecuteRaw = vi.fn(async (_strings: unknown, ...values: unknown[]) => {
+    const key = String(values[0]);
+    const prev = lockChains.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    lockChains.set(
+      key,
+      prev.then(() => gate)
+    );
+    await prev;
+    lockState.release = release;
+  });
+  const tx = { ...mockPrisma, $executeRaw: txExecuteRaw };
+  try {
+    return await fn(tx);
+  } finally {
+    lockState.release?.();
+  }
+});
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/scheduled-posts/auth", () => ({ resolveScheduledPostActor: mockActor }));
@@ -33,6 +64,7 @@ const FUTURE = "2026-10-01T15:00:00.000Z";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  lockChains.clear();
   mockActor.mockResolvedValue({ source: "LOTE" });
   mockPrisma.instagramAccount.findFirst.mockResolvedValue({
     id: "acc_1",
@@ -155,6 +187,42 @@ describe("POST /api/scheduled-posts — permanent dedup (bloqueador 3)", () => {
     );
 
     expect(res.status).toBe(400);
+  });
+
+  it("Rodada 3, achado 3: serializes two concurrent creates for the same content — only one wins", async () => {
+    // A stateful fake table, so the second call's dedup check actually sees
+    // what the first call created — this is what an in-memory single-return
+    // mock (used by the other tests above) cannot exercise.
+    const created: Array<{ id: string; contentHash: string[] }> = [];
+    let nextId = 1;
+    mockPrisma.scheduledPost.findMany.mockImplementation(async () =>
+      created.map((c) => ({ ...c }))
+    );
+    mockPrisma.scheduledPost.create.mockImplementation(
+      async ({ data }: { data: { contentHash: string[] } }) => {
+        const row = { id: `post_${nextId++}`, ...data };
+        created.push({ id: row.id, contentHash: row.contentHash });
+        return row;
+      }
+    );
+
+    const body = () =>
+      postRequest({
+        mediaType: "REELS",
+        storagePaths: [mp4(1)],
+        caption: "Legenda",
+        scheduledFor: FUTURE,
+        username: "conta",
+      });
+
+    // Without the pg_advisory_xact_lock fix, both requests would run their
+    // findMany-then-create as two independent statements, both see
+    // created=[] and both succeed — two rows for the exact same content.
+    const [resA, resB] = await Promise.all([POST(body()), POST(body())]);
+    const statuses = [resA.status, resB.status].sort();
+
+    expect(created).toHaveLength(1);
+    expect(statuses).toEqual([201, 409]);
   });
 
   it("rejects a scheduledFor more than 5 minutes in the past", async () => {
