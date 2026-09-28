@@ -26,6 +26,21 @@
  * Reads PAINEL_URL and SCHEDULER_API_TOKEN from the environment (e.g.
  * `set -a; . deploy/.env.prod; set +a`). --dry-run needs neither: it only
  * prints the grid.
+ *
+ * Fase 4 — `--destinos instagram,tiktok,youtube` (default `instagram`) fans
+ * the SAME upload out into one `POST /api/scheduled-posts` per destination.
+ * `--conta` stays required either way (it resolves the workspace even for a
+ * TikTok/YouTube-only run). TikTok needs `--tiktok-privacidade` (one of
+ * PUBLIC_TO_EVERYONE/MUTUAL_FOLLOW_FRIENDS/FOLLOWER_OF_CREATOR/SELF_ONLY, no
+ * default) and `--tiktok-consentimento` (a flag — its absence aborts before
+ * anything uploads, explaining why); `--tiktok-sem-dueto`/
+ * `--tiktok-sem-costura` are optional opt-outs (both allowed by default).
+ * YouTube needs `--youtube-infantil sim|nao` (no default — COPPA); the title
+ * comes from a sibling `<nome>-titulo.txt` if present, else the caption's
+ * first line cut to 100 chars; `--youtube-visibilidade` defaults to
+ * `public`. Both destinations require every planned file to be `--tipo
+ * REELS` (single video) — checked before any upload starts, same as the
+ * rest of validatePlansOrThrow.
  */
 
 import { createHash } from "node:crypto";
@@ -44,6 +59,15 @@ const MAX_HASHTAGS = 30;
 const MAX_PAST_SLACK_MS = 5 * 60 * 1000;
 
 type MediaType = "REELS" | "IMAGE" | "CAROUSEL";
+type Platform = "INSTAGRAM" | "TIKTOK" | "YOUTUBE";
+
+const TIKTOK_PRIVACY_LEVELS = [
+  "PUBLIC_TO_EVERYONE",
+  "MUTUAL_FOLLOW_FRIENDS",
+  "FOLLOWER_OF_CREATOR",
+  "SELF_ONLY",
+] as const;
+const MAX_YOUTUBE_TITLE_LENGTH = 100;
 
 interface PostPlan {
   conta: string;
@@ -79,6 +103,127 @@ function parseArgs(argv: string[]): Args {
 function requireString(args: Args, key: string): string | null {
   const value = args[key];
   return typeof value === "string" ? value : null;
+}
+
+// --- Fase 4: destinations (Instagram/TikTok/YouTube via Zernio) ---------------
+
+function parseDestinos(args: Args): Platform[] {
+  const raw = requireString(args, "destinos") ?? "instagram";
+  const mapped = raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+    .map((s): Platform => {
+      if (s === "instagram") return "INSTAGRAM";
+      if (s === "tiktok") return "TIKTOK";
+      if (s === "youtube") return "YOUTUBE";
+      throw new Error(`--destinos inválido: "${s}" (use instagram, tiktok e/ou youtube)`);
+    });
+  return [...new Set(mapped)];
+}
+
+function buildTiktokSettings(args: Args): {
+  privacyLevel: string;
+  allowComment: boolean;
+  allowDuet: boolean;
+  allowStitch: boolean;
+  consentGiven: boolean;
+} {
+  const privacidade = requireString(args, "tiktok-privacidade")?.toUpperCase();
+  if (!privacidade || !(TIKTOK_PRIVACY_LEVELS as readonly string[]).includes(privacidade)) {
+    throw new Error(
+      `--tiktok-privacidade é obrigatório para --destinos com tiktok e deve ser um de: ${TIKTOK_PRIVACY_LEVELS.join(", ")}`
+    );
+  }
+  if (!args["tiktok-consentimento"]) {
+    throw new Error(
+      '--tiktok-consentimento é obrigatório para --destinos com tiktok — confirma que revisou o conteúdo e concorda com a Music Usage Confirmation do TikTok'
+    );
+  }
+  return {
+    privacyLevel: privacidade,
+    allowComment: true,
+    allowDuet: !args["tiktok-sem-dueto"],
+    allowStitch: !args["tiktok-sem-costura"],
+    consentGiven: true,
+  };
+}
+
+/** `<nome>-titulo.txt` if present, else the caption's own first line, cut to
+ * MAX_YOUTUBE_TITLE_LENGTH — mirrors components/scheduled-post-form.tsx's
+ * default for the same field in the panel. */
+function youtubeTitleFor(mediaPath: string, caption: string): string {
+  const dir = path.dirname(mediaPath);
+  const base = path.basename(mediaPath, path.extname(mediaPath));
+  const titlePath = path.join(dir, `${base}-titulo.txt`);
+  if (fs.existsSync(titlePath)) {
+    return fs.readFileSync(titlePath, "utf8").trim().slice(0, MAX_YOUTUBE_TITLE_LENGTH);
+  }
+  return (caption.split("\n")[0] ?? "").trim().slice(0, MAX_YOUTUBE_TITLE_LENGTH);
+}
+
+function validateYoutubeInfantilArgOrThrow(args: Args): "sim" | "nao" {
+  const value = requireString(args, "youtube-infantil");
+  if (value !== "sim" && value !== "nao") {
+    throw new Error('--youtube-infantil é obrigatório para --destinos com youtube (use "sim" ou "nao")');
+  }
+  return value;
+}
+
+function buildYoutubeSettings(args: Args, mediaPath: string, caption: string): {
+  title: string;
+  visibility: string;
+  madeForKids: boolean;
+} {
+  const visibilidade = requireString(args, "youtube-visibilidade") ?? "public";
+  const infantil = validateYoutubeInfantilArgOrThrow(args);
+  const title = youtubeTitleFor(mediaPath, caption);
+  if (!title) {
+    throw new Error(
+      `${path.basename(mediaPath)}: YouTube precisa de título — crie ${path.basename(mediaPath, path.extname(mediaPath))}-titulo.txt ou escreva uma legenda`
+    );
+  }
+  return { title, visibility: visibilidade, madeForKids: infantil === "sim" };
+}
+
+/** Everything about `--destinos` checkable before any upload starts —
+ * mirrors validatePlansOrThrow's own "whole batch first" philosophy. */
+function validateDestinosOrThrow(args: Args, plans: PostPlan[], destinos: Platform[]): void {
+  const errors: string[] = [];
+
+  if (destinos.includes("TIKTOK")) {
+    try {
+      buildTiktokSettings(args);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (destinos.includes("YOUTUBE")) {
+    try {
+      validateYoutubeInfantilArgOrThrow(args);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+    for (const plan of plans) {
+      if (!youtubeTitleFor(plan.files[0], plan.caption)) {
+        errors.push(
+          `${path.basename(plan.files[0])}: YouTube precisa de título — crie um -titulo.txt ou escreva uma legenda`
+        );
+      }
+    }
+  }
+  if (destinos.includes("TIKTOK") || destinos.includes("YOUTUBE")) {
+    for (const plan of plans) {
+      if (plan.mediaType !== "REELS") {
+        const label = plan.files.map((f) => path.basename(f)).join(", ");
+        errors.push(`${label}: TikTok e YouTube Shorts só aceitam vídeo (--tipo REELS)`);
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Validação de --destinos falhou, nada foi enviado:\n  - ${errors.join("\n  - ")}`);
+  }
 }
 
 // --- File discovery ----------------------------------------------------------
@@ -258,17 +403,19 @@ function hashSetKey(hashes: string[]): string {
 // --- API calls ----------------------------------------------------------------
 
 /**
- * Existing (non-CANCELED) content-hash sets already scheduled for `conta`.
- * Unlike the old path-based check, this is never silently empty on failure —
- * a broken GET here means we genuinely don't know what's already scheduled,
- * so the caller must abort rather than risk re-uploading and re-scheduling
- * duplicates.
+ * Existing (non-CANCELED) content-hash sets already scheduled for `conta`,
+ * per destination platform (Fase 4: dedup on the server is scoped per
+ * platform+account now — the same file can legitimately be scheduled on
+ * Instagram AND still need scheduling on TikTok). Unlike the old path-based
+ * check, this is never silently empty on failure — a broken GET here means
+ * we genuinely don't know what's already scheduled, so the caller must
+ * abort rather than risk re-uploading and re-scheduling duplicates.
  */
 async function fetchExistingHashKeys(
   paineluUrl: string,
   token: string,
   conta: string
-): Promise<Set<string>> {
+): Promise<Record<Platform, Set<string>>> {
   const res = await fetch(
     `${paineluUrl}/api/scheduled-posts?username=${encodeURIComponent(conta)}`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -280,13 +427,18 @@ async function fetchExistingHashKeys(
     );
   }
 
-  const keys = new Set<string>();
-  for (const post of json.data as { contentHash?: string[] }[]) {
+  const byPlatform: Record<Platform, Set<string>> = {
+    INSTAGRAM: new Set(),
+    TIKTOK: new Set(),
+    YOUTUBE: new Set(),
+  };
+  for (const post of json.data as { contentHash?: string[]; platform?: Platform }[]) {
+    const platform = post.platform ?? "INSTAGRAM"; // older rows predate Fase 4's column
     if (post.contentHash && post.contentHash.length > 0) {
-      keys.add(hashSetKey(post.contentHash));
+      byPlatform[platform].add(hashSetKey(post.contentHash));
     }
   }
-  return keys;
+  return byPlatform;
 }
 
 async function uploadFile(
@@ -311,17 +463,24 @@ async function schedulePost(
   paineluUrl: string,
   token: string,
   plan: PostPlan,
-  storagePaths: string[]
+  storagePaths: string[],
+  platform: Platform,
+  args: Args
 ): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch(`${paineluUrl}/api/scheduled-posts`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({
       username: plan.conta,
+      platform,
       mediaType: plan.mediaType,
       storagePaths,
       caption: plan.caption,
       scheduledFor: plan.scheduledForUtcIso,
+      ...(platform === "TIKTOK" ? { tiktokSettings: buildTiktokSettings(args) } : {}),
+      ...(platform === "YOUTUBE"
+        ? { youtubeSettings: buildYoutubeSettings(args, plan.files[0], plan.caption) }
+        : {}),
     }),
   });
   const json = await res.json().catch(() => null);
@@ -347,6 +506,7 @@ async function main() {
 
   const csvPath = requireString(args, "csv");
   const conta = requireString(args, "conta");
+  const destinos = parseDestinos(args);
 
   const plans = csvPath ? planFromCsv(csvPath, conta) : planFromFolder(args, conta ?? "");
   if (plans.length === 0) {
@@ -356,12 +516,16 @@ async function main() {
 
   // Bloqueador D: caption/type/time are all checked BEFORE any upload, and a
   // slot already in the past aborts the whole run rather than failing
-  // halfway through.
+  // halfway through. Fase 4: --destinos' own requirements (privacidade,
+  // consentimento, infantil, vídeo-only) are checked the same way.
   validatePlansOrThrow(plans, Date.now());
+  validateDestinosOrThrow(args, plans, destinos);
 
-  console.log(`[agendar-lote] ${plans.length} post(s) na grade${dryRun ? " (dry-run)" : ""}`);
+  console.log(
+    `[agendar-lote] ${plans.length} post(s) na grade, destinos: ${destinos.join(", ")}${dryRun ? " (dry-run)" : ""}`
+  );
 
-  const existingHashesByConta = new Map<string, Set<string>>();
+  const existingHashesByConta = new Map<string, Record<Platform, Set<string>>>();
   if (!dryRun) {
     for (const c of new Set(plans.map((p) => p.conta))) {
       existingHashesByConta.set(c, await fetchExistingHashKeys(paineluUrl!, schedulerToken!, c));
@@ -379,21 +543,30 @@ async function main() {
     const fileNames = plan.files.map((f) => path.basename(f)).join(", ");
 
     if (dryRun) {
-      console.log(`[agendar-lote] (dry-run) ${plan.mediaType} @${plan.conta} em ${when} — ${fileNames}`);
+      console.log(
+        `[agendar-lote] (dry-run) ${plan.mediaType} @${plan.conta} em ${when} — ${fileNames} — destinos: ${destinos.join(", ")}`
+      );
       scheduled += 1;
       continue;
     }
 
     try {
       const localHashes = plan.files.map(sha256File);
-      const alreadyScheduled = existingHashesByConta.get(plan.conta)?.has(hashSetKey(localHashes));
-      if (alreadyScheduled) {
-        console.log(`[agendar-lote] pulando (mesmo conteúdo já agendado): ${fileNames}`);
+      const hashKey = hashSetKey(localHashes);
+      // Fase 4: dedup is per (conta, platform) now — a file already
+      // scheduled on Instagram still needs scheduling on TikTok/YouTube, so
+      // each destination is skipped independently, not the whole plan.
+      const existingForConta = existingHashesByConta.get(plan.conta);
+      const toSchedule = destinos.filter((platform) => !existingForConta?.[platform]?.has(hashKey));
+      if (toSchedule.length === 0) {
+        console.log(`[agendar-lote] pulando (mesmo conteúdo já agendado em todos os destinos): ${fileNames}`);
         skipped += 1;
         continue;
       }
 
-      console.log(`[agendar-lote] ${plan.mediaType} @${plan.conta} em ${when} — ${fileNames}`);
+      console.log(
+        `[agendar-lote] ${plan.mediaType} @${plan.conta} em ${when} — ${fileNames} — destinos: ${toSchedule.join(", ")}`
+      );
 
       const storagePaths: string[] = [];
       for (const file of plan.files) {
@@ -409,13 +582,21 @@ async function main() {
         storagePaths.push(await uploadFile(paineluUrl!, schedulerToken!, file, contentTypeFor(file)));
       }
 
-      const result = await schedulePost(paineluUrl!, schedulerToken!, plan, storagePaths);
-      if (!result.ok) {
-        console.error(`[agendar-lote] falhou (${fileNames}): ${result.error}`);
-        failed += 1;
-        continue;
+      let anyFailedThisPlan = false;
+      for (const platform of toSchedule) {
+        const result = await schedulePost(paineluUrl!, schedulerToken!, plan, storagePaths, platform, args);
+        if (!result.ok) {
+          console.error(`[agendar-lote] falhou (${fileNames}, ${platform}): ${result.error}`);
+          anyFailedThisPlan = true;
+        } else {
+          console.log(`[agendar-lote]   -> ${platform} agendado`);
+        }
       }
-      scheduled += 1;
+      if (anyFailedThisPlan) {
+        failed += 1;
+      } else {
+        scheduled += 1;
+      }
     } catch (err) {
       // Per-item failure: log and move on to the next item — never abort
       // the whole batch over one bad file/upload.
@@ -429,7 +610,26 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  console.error("[agendar-lote]", err instanceof Error ? err.message : err);
-  process.exitCode = 1;
-});
+// Only auto-run when invoked directly (`npx tsx scripts/agendar-lote.ts ...`),
+// never when a test imports this module to exercise the pure helpers below or
+// `main()` itself with mocked fetch/env — an unguarded top-level call would
+// otherwise fire on every `import()` and read real argv/env.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error("[agendar-lote]", err instanceof Error ? err.message : err);
+    process.exitCode = 1;
+  });
+}
+
+export {
+  main,
+  parseArgs,
+  parseDestinos,
+  buildTiktokSettings,
+  youtubeTitleFor,
+  validateYoutubeInfantilArgOrThrow,
+  buildYoutubeSettings,
+  validateDestinosOrThrow,
+  validatePlansOrThrow,
+};
+export type { Args, Platform, PostPlan };
