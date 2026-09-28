@@ -91,3 +91,52 @@ export async function sendPublishWarningAlert(params: {
     params
   );
 }
+
+/** Fase 4 (TikTok/YouTube Shorts via Zernio) equivalent of
+ * `sendPublishFailureAlert` — split out because a Zernio post has no
+ * Instagram `username` to put in the subject line (`platform` is "TikTok"
+ * or "YouTube Shorts" instead). */
+export async function sendZernioPublishFailureAlert(params: {
+  workspaceId: string;
+  scheduledPostId: string;
+  platform: string;
+  errorMessage: string;
+}): Promise<void> {
+  await sendAlertEmail(
+    `Falha ao publicar post agendado (${params.platform})`,
+    [
+      `O post agendado ${params.scheduledPostId} (workspace ${params.workspaceId}, ${params.platform}) falhou definitivamente.`,
+      "",
+      `Erro: ${params.errorMessage}`,
+    ].join("\n"),
+    params
+  );
+}
+
+/**
+ * Fase 4 equivalent of `sendPublishWarningAlert`, for the two ways a
+ * TikTok/YouTube post can end up published-but-unconfirmed
+ * (reconcileZernioPublishing in lib/scheduled-posts/engine.ts): a
+ * `GET /posts/{id}` poll that never came back and had to give up after
+ * `STUCK_POLLING_THRESHOLD_MS`, or a POST whose own response was lost and
+ * `listZernioPosts` couldn't find a confident match to reconcile against.
+ */
+export async function sendZernioPublishWarningAlert(params: {
+  workspaceId: string;
+  scheduledPostId: string;
+  platform: string;
+  message: string;
+}): Promise<void> {
+  await sendAlertEmail(
+    `Post agendado (${params.platform}) com resultado incerto`,
+    [
+      `O post agendado ${params.scheduledPostId} (workspace ${params.workspaceId}, ${params.platform})`,
+      "não teve o resultado confirmado junto à Zernio.",
+      "",
+      `Detalhe: ${params.message}`,
+      "",
+      "Confira manualmente na conta e, se necessário, use retry/reagendar no painel.",
+    ].join("\n"),
+    params
+  );
+}
