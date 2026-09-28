@@ -111,13 +111,35 @@ export async function getUserMedia({
 export async function getAllUserMedia({
   context,
   max = 500,
+  until,
 }: {
   context: InstagramContext;
   max?: number;
+  until?: Date;
 }) {
+  // Zernio's post listing has no pagination cursor (see docs/zernio.md — the
+  // API only ever returns the latest ~25 posts), so `until` cannot be
+  // honored there; the single page it returns is already everything reachable.
   return context.provider === "META"
-    ? meta.getAllUserMedia(context.accessToken, max)
+    ? meta.getAllUserMedia(context.accessToken, max, until)
     : getUserMedia({ context, limit: max });
+}
+
+/**
+ * A single media's details by id, for post context (permalink/caption/type/
+ * thumbnail) attached to a comment. `null` for Zernio: its API has no
+ * "fetch one media by id" equivalent, only the recent-posts listing.
+ */
+export async function getMediaById({
+  context,
+  mediaId,
+}: {
+  context: InstagramContext;
+  mediaId: string;
+}): Promise<meta.InstagramMedia | null> {
+  if (context.provider === "META")
+    return meta.getMediaById(context.accessToken, mediaId);
+  return null;
 }
 
 export async function getUserInfo({

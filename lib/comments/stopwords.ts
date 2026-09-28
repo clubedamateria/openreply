@@ -50,7 +50,12 @@ const RAW_STOPWORDS_PT_BR = [
   "algumas", "nenhum", "nenhuma", "nada", "tudo", "alguém", "ninguém",
   // Abreviações e gírias comuns em comentários do Instagram
   "pra", "pro", "pq", "né", "ne", "tá", "ta", "vc", "vcs", "voce", "voces",
-  "você", "vocês", "tb", "tbm", "obg", "blz", "q",
+  "você", "vocês", "tb", "tbm", "obg", "blz", "q", "kkk", "rs",
+  // Saudações e muletas de comentário (ruído, não tema): "Oiii boa tarde
+  // gostaria de saber..." não deve virar "oi", "boa", "tarde", "gostaria",
+  // "saber" no ranking de palavras.
+  "oi", "ola", "boa", "bom", "tarde", "noite", "dia", "gostaria", "queria",
+  "saber", "alguem", "favor", "obrigado", "obrigada", "gente", "pessoal",
 ];
 
 export const STOPWORDS_PT_BR: ReadonlySet<string> = new Set(

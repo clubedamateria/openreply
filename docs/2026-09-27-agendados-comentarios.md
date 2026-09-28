@@ -437,3 +437,43 @@ direto — sem isso, importar o módulo num teste dispararia o CLI de verdade.
 Depois: `git push origin deploy` → o dono roda `bash .tmp/publicar-fase4.sh` (backup, 3 chaves ZERNIO_* copiadas do vault para a VM, pull, teste da migration numa cópia, up, conferência). Esse arquivo está fora do git.
 
 **Esperando o dono:** teste do "Estou..." no YouTube (público, privado ou não testar) e o ritmo dos 30 Reels do quiz (IG + TikTok + YT, sem a lista-01; mostrar o `--dry-run` antes).
+
+## Fatia 2, reforma completa (achados do dono em produção, 2026-09-28)
+
+O dono achou a tela ruim (cards de 1-3 comentários virando ruído, card de
+emoji vazio) e a coleta furada (30 posts/dia não cobre quem publica 30+ posts
+num dia; anúncio/dark-post nunca aparece em `/me/media`). Branch
+`fix/comentarios`.
+
+- **`app/api/cron/sync-comments/route.ts`**: trocou "últimos 30 posts" por
+  paginar a mídia mais nova primeiro até passar de 90 dias ou 500 posts
+  (`getAllUserMedia`'s novo `until`), só varrendo posts com
+  `comments_count > 0` ou o campo ausente (Zernio nunca manda esse campo —
+  `selectMediaWithComments`, em `lib/comments/sync.ts`, pura e testada).
+  Anúncio/dark-post: os `mediaId` já gravados em `InstagramComment` (90 dias)
+  que a listagem não trouxe voltam a ser varridos também, teto 100
+  (`selectMissingMediaIds`, idem). Orçamento de tempo de 50s com
+  `partial: true` no JSON quando estoura, em vez de depender só do
+  `maxDuration` da rota.
+- **`app/api/instagram/comments/route.ts`**: resposta reformulada —
+  `summary` (totalComments/uniquePeople/questions/postsWithComments),
+  `comments` (200 mais recentes, com `isQuestion`), `posts` (top 20 por
+  contagem, com permalink/legenda/tipo AD|REELS|FEED|STORY/thumbnail via
+  Graph `/{media-id}`, cache de 1h, teto de 30 mediaId por request — nunca
+  mais o `getPermalinkMap` limitado aos últimos 30 posts, que não achava
+  anúncio nem post antigo). `wordStats` com `minCount: 2`.
+- **`lib/comments/questions.ts`** (novo): `isQuestion(text)` — `?` literal OU
+  frase que começa com interrogativo depois de tirar saudação
+  ("Boa tarde, gostaria de saber..." → true).
+- **`lib/comments/stopwords.ts`**: saudações/muletas (oi, boa, tarde,
+  gostaria, saber, obrigado, gente, kkk, rs...).
+- **`lib/comments/word-stats.ts`**: `minCount` opcional; letra repetida 3+
+  colapsa numa só ("oiii"→"oi", "kkkk"→"k") e token de 1 letra é descartado.
+- **`app/(dashboard)/comentarios/page.tsx`**: refeita — 4 números, "Perguntas
+  do público", "Posts com mais comentários" / "Do que o público fala" lado a
+  lado, "Todos os comentários" com filtro Todos/Só perguntas e paginação de
+  50, campanhas só se houver (senão linha discreta). Sem cards de 1-3
+  comentários nem card de emoji vazio.
+- `npm run typecheck`, `npm run lint` e `npm test` verdes (406 testes, 37
+  novos). `npx prisma generate` precisa rodar neste worktree antes (client
+  vai para `app/generated/prisma`, não commitado).

@@ -16,7 +16,12 @@ vi.mock("@/lib/db/client", () => ({
   },
 }));
 
-import { isOwnAccountComment, recordInstagramComment } from "../lib/comments/sync";
+import {
+  isOwnAccountComment,
+  recordInstagramComment,
+  selectMediaWithComments,
+  selectMissingMediaIds,
+} from "../lib/comments/sync";
 
 describe("isOwnAccountComment", () => {
   const account = { instagramId: "ig_123", username: "ourbrand" };
@@ -158,5 +163,66 @@ describe("recordInstagramComment", () => {
         commentedAt: new Date(),
       })
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("selectMediaWithComments", () => {
+  it("keeps media with comments_count > 0", () => {
+    const media = [{ id: "m1", comments_count: 3 }];
+    expect(selectMediaWithComments(media)).toEqual(media);
+  });
+
+  it("drops media with comments_count === 0", () => {
+    expect(selectMediaWithComments([{ id: "m1", comments_count: 0 }])).toEqual([]);
+  });
+
+  it("keeps media with comments_count missing (e.g. the Zernio listing)", () => {
+    const media = [{ id: "m1" }];
+    expect(selectMediaWithComments(media)).toEqual(media);
+  });
+
+  it("filters a mixed list", () => {
+    const media = [
+      { id: "m1", comments_count: 5 },
+      { id: "m2", comments_count: 0 },
+      { id: "m3" },
+      { id: "m4", comments_count: 0 },
+    ];
+    expect(selectMediaWithComments(media).map((m) => m.id)).toEqual(["m1", "m3"]);
+  });
+});
+
+describe("selectMissingMediaIds", () => {
+  it("returns known media ids not present in the fresh listing (dark-post ads)", () => {
+    const result = selectMissingMediaIds({
+      knownMediaIds: ["ad_1", "feed_1", "ad_2"],
+      listedMediaIds: ["feed_1", "feed_2"],
+    });
+    expect(result).toEqual(["ad_1", "ad_2"]);
+  });
+
+  it("returns nothing when every known media id is already in the listing", () => {
+    const result = selectMissingMediaIds({
+      knownMediaIds: ["feed_1"],
+      listedMediaIds: ["feed_1", "feed_2"],
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("caps how many extra media ids come back", () => {
+    const result = selectMissingMediaIds({
+      knownMediaIds: ["ad_1", "ad_2", "ad_3", "ad_4"],
+      listedMediaIds: [],
+      cap: 2,
+    });
+    expect(result).toEqual(["ad_1", "ad_2"]);
+  });
+
+  it("de-duplicates known media ids", () => {
+    const result = selectMissingMediaIds({
+      knownMediaIds: ["ad_1", "ad_1", "ad_2"],
+      listedMediaIds: [],
+    });
+    expect(result).toEqual(["ad_1", "ad_2"]);
   });
 });

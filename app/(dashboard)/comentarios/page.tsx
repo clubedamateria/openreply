@@ -3,14 +3,25 @@
 /**
  * Página Comentários
  *
- * O que o público mais escreve nos comentários (palavras, expressões e
- * emojis), o desempenho das palavras-chave de cada campanha e os
- * comentários mais recentes com link para o post.
+ * Perguntas do público, posts mais comentados, do que o público fala
+ * (palavras/expressões/emojis), todos os comentários e o desempenho das
+ * palavras-chave de cada campanha.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  HelpCircle,
+  Images,
+  MessageCircle,
+  Users,
+} from "lucide-react";
 import AccountSelect from "@/components/account-select";
-import type { CommentsResponse } from "@/app/api/instagram/comments/route";
+import StatCard from "@/components/stat-card";
+import type { CommentsResponse, PostKind } from "@/app/api/instagram/comments/route";
+
+type PostSummary = CommentsResponse["posts"][number];
+type CommentSummary = CommentsResponse["comments"][number];
 
 const DAYS_OPTIONS = [
   { value: "7", label: "Últimos 7 dias" },
@@ -18,12 +29,31 @@ const DAYS_OPTIONS = [
   { value: "90", label: "Últimos 90 dias" },
 ];
 
+// With fewer comments than this, word/expression counts are too thin to read
+// as a pattern (a single "Oiii" or "de saber" isn't a topic).
+const MIN_COMMENTS_FOR_TOPICS = 20;
+const COMMENTS_PAGE_SIZE = 50;
+
+const POST_KIND_LABEL: Record<Exclude<PostKind, null>, string> = {
+  AD: "Anúncio",
+  REELS: "Reel",
+  FEED: "Post",
+  STORY: "Story",
+};
+
+const POST_KIND_BADGE: Record<Exclude<PostKind, null>, string> = {
+  AD: "badge-warning",
+  REELS: "badge-info",
+  FEED: "badge-neutral",
+  STORY: "badge-accent",
+};
+
 function formatNumber(n: number): string {
   return n.toLocaleString("pt-BR");
 }
 
 function formatPercent(rate: number | null): string {
-  if (rate === null) return "—";
+  if (rate === null) return "sem dados";
   return `${Math.round(rate * 100)}%`;
 }
 
@@ -36,39 +66,45 @@ function formatDate(iso: string): string {
   });
 }
 
-function BarList({
-  items,
-  emptyLabel,
+function PostBadge({ kind }: { kind: PostKind }) {
+  if (!kind) return null;
+  return <span className={`badge ${POST_KIND_BADGE[kind]}`}>{POST_KIND_LABEL[kind]}</span>;
+}
+
+/** @user, data, texto, contexto do post (badge + trecho da legenda) e link — usado em "Perguntas" e "Todos os comentários". */
+function CommentListItem({
+  comment,
+  post,
 }: {
-  items: { label: string; count: number }[];
-  emptyLabel: string;
+  comment: CommentSummary;
+  post: PostSummary | undefined;
 }) {
-  if (items.length === 0) {
-    return <p className="text-sm text-muted py-6 text-center">{emptyLabel}</p>;
-  }
-  const max = items[0].count;
   return (
-    <ul className="space-y-2.5">
-      {items.map((item) => (
-        <li key={item.label} className="flex items-center gap-3">
-          <span
-            className="w-28 shrink-0 truncate text-sm text-foreground"
-            title={item.label}
-          >
-            {item.label}
-          </span>
-          <div className="flex-1 h-2 rounded bg-surface-hover overflow-hidden">
-            <div
-              className="h-full bg-accent"
-              style={{ width: `${max > 0 ? (item.count / max) * 100 : 0}%` }}
-            />
-          </div>
-          <span className="w-8 shrink-0 text-right text-xs text-muted">
-            {item.count}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <li className="py-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-bold text-foreground">
+          @{comment.username ?? comment.accountUsername}
+        </span>
+        <span className="shrink-0 text-xs text-muted">{formatDate(comment.commentedAt)}</span>
+      </div>
+      <p className="mt-1 text-sm text-foreground">{comment.text}</p>
+      {(post?.kind || post?.caption || post?.permalink) && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted">
+          <PostBadge kind={post?.kind ?? null} />
+          {post?.caption && <span className="max-w-[240px] truncate">{post.caption}</span>}
+          {post?.permalink && (
+            <a
+              href={post.permalink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent hover:underline"
+            >
+              Abrir no Instagram
+            </a>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -78,6 +114,8 @@ export default function ComentariosPage() {
   const [error, setError] = useState<string | null>(null);
   const [days, setDays] = useState("30");
   const [accountId, setAccountId] = useState("all");
+  const [commentFilter, setCommentFilter] = useState<"all" | "questions">("all");
+  const [visibleCount, setVisibleCount] = useState(COMMENTS_PAGE_SIZE);
 
   useEffect(() => {
     const params = new URLSearchParams({ days });
@@ -89,6 +127,8 @@ export default function ComentariosPage() {
         if (res.success) {
           setData(res.data);
           setError(null);
+          setCommentFilter("all");
+          setVisibleCount(COMMENTS_PAGE_SIZE);
         } else {
           setError(res.error ?? "Falha ao carregar os comentários");
         }
@@ -96,6 +136,29 @@ export default function ComentariosPage() {
       .catch(() => setError("Falha ao carregar os comentários"))
       .finally(() => setLoading(false));
   }, [days, accountId]);
+
+  const postsByMediaId = useMemo(
+    () => new Map((data?.posts ?? []).map((p) => [p.mediaId, p])),
+    [data?.posts]
+  );
+
+  const questions = useMemo(
+    () => (data?.comments ?? []).filter((c) => c.isQuestion).slice(0, 20),
+    [data?.comments]
+  );
+
+  const topicChips = useMemo(
+    () =>
+      [...(data?.wordStats.topWords ?? []), ...(data?.wordStats.topBigrams ?? [])].sort(
+        (a, b) => b.count - a.count
+      ),
+    [data?.wordStats]
+  );
+
+  const filteredComments = useMemo(() => {
+    const list = data?.comments ?? [];
+    return commentFilter === "questions" ? list.filter((c) => c.isQuestion) : list;
+  }, [data?.comments, commentFilter]);
 
   function handleDaysChange(next: string) {
     setLoading(true);
@@ -107,19 +170,32 @@ export default function ComentariosPage() {
     setAccountId(next);
   }
 
+  function handleFilterChange(next: "all" | "questions") {
+    setCommentFilter(next);
+    setVisibleCount(COMMENTS_PAGE_SIZE);
+  }
+
   if (loading && !data) {
     return (
       <div className="space-y-6">
-        {[...Array(3)].map((_, i) => (
-          <div key={i} className="panel rounded p-6 h-32 animate-pulse" />
-        ))}
+        <div className="skeleton h-14 w-72 rounded-2xl" />
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="skeleton h-28 rounded-2xl" />
+          ))}
+        </div>
+        <div className="skeleton h-64 rounded-2xl" />
+        <div className="skeleton h-80 rounded-2xl" />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="panel rounded p-8 text-center">
+      <div className="card flex flex-col items-center gap-3 p-8 text-center">
+        <span className="icon-tile bg-error-soft text-error" aria-hidden="true">
+          <AlertTriangle size={22} />
+        </span>
         <p className="text-sm text-error">{error}</p>
       </div>
     );
@@ -128,24 +204,25 @@ export default function ComentariosPage() {
   if (!data) return null;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 stagger">
+      {/* 1. Cabeçalho */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-foreground">Comentários</h1>
-          <p className="text-sm text-muted mt-1">
-            {formatNumber(data.totalComments)} comentário
-            {data.totalComments === 1 ? "" : "s"} no período
+          <h1 className="text-xl font-extrabold text-brand">Comentários</h1>
+          <p className="mt-1 text-sm text-muted">
+            O que o público pergunta e comenta nos seus posts.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
-          <label className="flex flex-col gap-2 text-sm">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          <div>
+            <label htmlFor="comentarios-days" className="label">
               Período
-            </span>
+            </label>
             <select
+              id="comentarios-days"
               value={days}
               onChange={(e) => handleDaysChange(e.target.value)}
-              className="border-0 bg-transparent py-2 pr-1 text-sm text-foreground outline-none"
+              className="field w-auto min-w-40"
             >
               {DAYS_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -153,7 +230,7 @@ export default function ComentariosPage() {
                 </option>
               ))}
             </select>
-          </label>
+          </div>
           {data.accounts.length > 1 && (
             <AccountSelect
               accounts={data.accounts.map((a) => ({
@@ -163,97 +240,235 @@ export default function ComentariosPage() {
               }))}
               value={accountId}
               onChange={handleAccountChange}
-              label="Conta do Instagram"
               includeAll
             />
           )}
         </div>
       </div>
 
-      {/* 1. O que o público mais escreve */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="panel rounded p-4 sm:p-6">
-          <h2 className="text-sm font-semibold text-foreground mb-4">
-            Palavras mais escritas
-          </h2>
-          <BarList
-            items={data.wordStats.topWords}
-            emptyLabel="Nenhuma palavra encontrada no período"
-          />
+      {/* 2. Linha de 4 números */}
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+        <StatCard
+          label="Comentários"
+          value={formatNumber(data.summary.totalComments)}
+          icon={<MessageCircle size={20} />}
+          tone="accent"
+        />
+        <StatCard
+          label="Pessoas diferentes"
+          value={formatNumber(data.summary.uniquePeople)}
+          icon={<Users size={20} />}
+          tone="brand"
+        />
+        <StatCard
+          label="Perguntas"
+          value={formatNumber(data.summary.questions)}
+          icon={<HelpCircle size={20} />}
+          tone="sun"
+        />
+        <StatCard
+          label="Posts comentados"
+          value={formatNumber(data.summary.postsWithComments)}
+          icon={<Images size={20} />}
+          tone="info"
+        />
+      </div>
+
+      {/* 3. Perguntas do público */}
+      <div className="card p-4 sm:p-6">
+        <h2 className="mb-4 text-sm font-bold text-foreground">Perguntas do público</h2>
+        {questions.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted">Nenhuma pergunta no período.</p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {questions.map((comment) => (
+              <CommentListItem
+                key={comment.id}
+                comment={comment}
+                post={postsByMediaId.get(comment.mediaId)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* 4. Posts com mais comentários | Do que o público fala */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="card p-4 sm:p-6">
+          <h2 className="mb-4 text-sm font-bold text-foreground">Posts com mais comentários</h2>
+          {data.posts.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted">Nenhum post comentado no período.</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {data.posts.map((post) => (
+                <li key={post.mediaId} className="flex items-center gap-3 py-3">
+                  {post.thumbnailUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={post.thumbnailUrl}
+                      alt=""
+                      className="h-10 w-10 shrink-0 rounded object-cover"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <span
+                      className="h-10 w-10 shrink-0 rounded bg-surface-hover"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <PostBadge kind={post.kind} />
+                      <span className="truncate text-sm text-foreground">
+                        {post.caption ?? "Sem legenda"}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {formatNumber(post.count)} comentário{post.count === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                  {post.permalink && (
+                    <a
+                      href={post.permalink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-ghost btn-sm shrink-0"
+                    >
+                      Ver
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-        <div className="panel rounded p-4 sm:p-6">
-          <h2 className="text-sm font-semibold text-foreground mb-4">
-            Expressões mais escritas
-          </h2>
-          <BarList
-            items={data.wordStats.topBigrams}
-            emptyLabel="Nenhuma expressão encontrada no período"
-          />
-        </div>
-        <div className="panel rounded p-4 sm:p-6">
-          <h2 className="text-sm font-semibold text-foreground mb-4">
-            Emojis mais usados
-          </h2>
-          <BarList
-            items={data.wordStats.topEmojis}
-            emptyLabel="Nenhum emoji encontrado no período"
-          />
+
+        <div className="card p-4 sm:p-6">
+          <h2 className="mb-4 text-sm font-bold text-foreground">Do que o público fala</h2>
+          {data.summary.totalComments < MIN_COMMENTS_FOR_TOPICS && (
+            <p className="mb-4 text-xs text-muted">
+              Com poucos comentários ainda não dá pra ver padrão. Os temas aparecem a partir de
+              20 comentários.
+            </p>
+          )}
+          {topicChips.length === 0 && data.wordStats.topEmojis.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted">
+              Nenhum tema com repetição no período.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {topicChips.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {topicChips.map((item) => (
+                    <span key={item.label} className="badge badge-neutral">
+                      {item.label} · {item.count}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {data.wordStats.topEmojis.length > 0 && (
+                <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+                  {data.wordStats.topEmojis.map((item) => (
+                    <span key={item.label} className="badge badge-neutral">
+                      {item.label} · {item.count}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* 2. Desempenho das palavras-chave por campanha */}
-      <div className="panel rounded p-4 sm:p-6">
-        <h2 className="text-sm font-semibold text-foreground mb-4">
-          Desempenho das palavras-chave por campanha
-        </h2>
-        {data.campaigns.length === 0 ? (
-          <p className="text-sm text-muted py-6 text-center">
-            Nenhuma campanha com comentários no período
-          </p>
+      {/* 5. Todos os comentários */}
+      <div className="card p-4 sm:p-6">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-bold text-foreground">Todos os comentários</h2>
+          <div
+            role="group"
+            aria-label="Filtrar comentários"
+            className="inline-flex shrink-0 gap-1 rounded-[10px] border border-border bg-surface p-1"
+          >
+            {(["all", "questions"] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => handleFilterChange(f)}
+                aria-pressed={commentFilter === f}
+                className={`min-h-[36px] rounded-lg px-3 text-sm font-bold transition-colors ${
+                  commentFilter === f
+                    ? "bg-brand-soft text-brand"
+                    : "text-muted hover:bg-surface-hover hover:text-foreground"
+                }`}
+              >
+                {f === "all" ? "Todos" : "Só perguntas"}
+              </button>
+            ))}
+          </div>
+        </div>
+        {filteredComments.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted">Nenhum comentário no período.</p>
         ) : (
+          <>
+            <ul className="divide-y divide-border">
+              {filteredComments.slice(0, visibleCount).map((comment) => (
+                <CommentListItem
+                  key={comment.id}
+                  comment={comment}
+                  post={postsByMediaId.get(comment.mediaId)}
+                />
+              ))}
+            </ul>
+            {visibleCount < filteredComments.length && (
+              <div className="mt-4 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleCount((c) => c + COMMENTS_PAGE_SIZE)}
+                  className="btn btn-secondary"
+                >
+                  Ver mais
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* 6. Palavras-chave das campanhas */}
+      {data.campaigns.length > 0 ? (
+        <div className="card p-4 sm:p-6">
+          <h2 className="mb-4 text-sm font-bold text-foreground">
+            Palavras-chave das campanhas
+          </h2>
           <div className="space-y-6">
             {data.campaigns.map((campaign) => (
-              <div
-                key={campaign.automationId}
-                className="border border-border rounded p-4"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div key={campaign.automationId} className="rounded-lg border border-border p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <h3 className="text-sm font-medium text-foreground">
                     {campaign.automationName}
                   </h3>
                   <div className="flex flex-wrap gap-4 text-xs text-muted">
-                    <span>
-                      {formatNumber(campaign.totalMatchedComments)} comentários batidos
-                    </span>
+                    <span>{formatNumber(campaign.totalMatchedComments)} comentários batidos</span>
                     <span>{formatNumber(campaign.totalDmsSent)} DMs enviadas</span>
                     <span>{formatNumber(campaign.totalClicks)} cliques</span>
-                    <span>
-                      {formatPercent(campaign.dmToClickRate)} DM → clique
-                    </span>
+                    <span>{formatPercent(campaign.dmToClickRate)} DM → clique</span>
                   </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[420px] text-sm">
                     <thead>
-                      <tr className="text-left text-xs uppercase tracking-wide text-zinc-500 border-b border-border">
+                      <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
                         <th className="py-2 pr-4 font-medium">Palavra-chave</th>
-                        <th className="py-2 px-3 font-medium text-right">
-                          Comentários batidos
-                        </th>
-                        <th className="py-2 pl-3 font-medium text-right">
-                          DMs enviadas
-                        </th>
+                        <th className="py-2 px-3 text-right font-medium">Comentários batidos</th>
+                        <th className="py-2 pl-3 text-right font-medium">DMs enviadas</th>
                       </tr>
                     </thead>
                     <tbody>
                       {campaign.keywords.map((row) => (
-                        <tr
-                          key={row.keyword}
-                          className="border-b border-border last:border-0"
-                        >
-                          <td className="py-2 pr-4 text-foreground">
-                            {row.keyword}
-                          </td>
+                        <tr key={row.keyword} className="border-b border-border last:border-0">
+                          <td className="py-2 pr-4 text-foreground">{row.keyword}</td>
                           <td className="py-2 px-3 text-right text-muted">
                             {formatNumber(row.matchedComments)}
                           </td>
@@ -268,46 +483,10 @@ export default function ComentariosPage() {
               </div>
             ))}
           </div>
-        )}
-      </div>
-
-      {/* 3. Comentários recentes */}
-      <div className="panel rounded p-4 sm:p-6">
-        <h2 className="text-sm font-semibold text-foreground mb-4">
-          Comentários recentes
-        </h2>
-        {data.recentComments.length === 0 ? (
-          <p className="text-sm text-muted py-6 text-center">
-            Nenhum comentário no período
-          </p>
-        ) : (
-          <ul className="divide-y divide-border">
-            {data.recentComments.map((comment) => (
-              <li key={comment.id} className="py-3 flex flex-col gap-1">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-medium text-foreground">
-                    @{comment.username ?? comment.accountUsername}
-                  </span>
-                  <span className="text-xs text-muted whitespace-nowrap">
-                    {formatDate(comment.commentedAt)}
-                  </span>
-                </div>
-                <p className="text-sm text-muted">{comment.text}</p>
-                {comment.permalink && (
-                  <a
-                    href={comment.permalink}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-accent hover:underline w-fit"
-                  >
-                    Ver post
-                  </a>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+        </div>
+      ) : (
+        <p className="text-sm text-muted">Nenhuma campanha com comentários no período.</p>
+      )}
     </div>
   );
 }

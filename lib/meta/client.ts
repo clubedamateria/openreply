@@ -591,12 +591,21 @@ export async function getUserMedia(
  * or there are no more pages. Pass a large `max` for an "all time" view; the
  * cap is a safety ceiling so an account with thousands of posts can't spin
  * forever (and so downstream per-media insight calls stay bounded).
+ *
+ * `until`, when given, stops pagination as soon as it reaches media older
+ * than that instant — `/me/media` is newest-first by default, so once an
+ * item on a page predates the cutoff, every item after it (this page and any
+ * further page) is outside the window too. Existing callers that don't pass
+ * `until` are unaffected: behavior is identical to before this parameter
+ * existed.
  */
 export async function getAllUserMedia(
   accessToken: string,
-  max = 500
+  max = 500,
+  until?: Date
 ): Promise<InstagramMedia[]> {
   const results: InstagramMedia[] = [];
+  const untilMs = until?.getTime();
 
   const first = new URL(`${instagramGraphBase()}/me/media`);
   first.searchParams.set("fields", MEDIA_FIELDS);
@@ -611,11 +620,56 @@ export async function getAllUserMedia(
       data: InstagramMedia[];
       paging?: { next?: string };
     }>(response);
-    results.push(...page.data);
+    const data = page.data ?? [];
+
+    if (untilMs !== undefined) {
+      const cutoffIndex = data.findIndex((m) => Date.parse(m.timestamp) < untilMs);
+      if (cutoffIndex === -1) {
+        results.push(...data);
+      } else {
+        results.push(...data.slice(0, cutoffIndex));
+        return results.slice(0, max);
+      }
+    } else {
+      results.push(...data);
+    }
+
     nextUrl = page.paging?.next ?? null;
   }
 
   return results.slice(0, max);
+}
+
+/**
+ * A single media's details by id — used to attach post context (permalink,
+ * caption, type, thumbnail) to a comment whose media may not be among the
+ * account's recent listing at all (an ad/dark post never appears in
+ * `/me/media`, only reachable this way once its id is known from a comment).
+ * Returns `null` on any failure (deleted media, expired token, rate limit —
+ * the caller treats "no context available" as normal, not fatal).
+ */
+export async function getMediaById(
+  accessToken: string,
+  mediaId: string
+): Promise<InstagramMedia | null> {
+  const url = new URL(`${instagramGraphBase()}/${mediaId}`);
+  url.searchParams.set(
+    "fields",
+    "id,permalink,caption,media_type,media_product_type,thumbnail_url,media_url,timestamp"
+  );
+  url.searchParams.set("access_token", accessToken);
+
+  try {
+    const response = await fetch(url.toString());
+    return await handleResponse<InstagramMedia>(response);
+  } catch (error) {
+    console.warn(
+      "[Meta] getMediaById failed:",
+      mediaId,
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
 }
 
 /**

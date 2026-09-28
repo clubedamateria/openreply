@@ -165,3 +165,93 @@ describe("analyzeCommentTexts — limit and ordering", () => {
     expect(stats.topWords).toEqual([{ label: "link", count: 1 }]);
   });
 });
+
+describe("analyzeCommentTexts — repeated-letter collapse", () => {
+  it("collapses a letter repeated 3+ times before grouping ('oiii' -> 'oi')", () => {
+    const stats = analyzeCommentTexts(["oiii material", "oi material", "oiiiii material"]);
+    const material = stats.topWords.find((w) => w.label === "material");
+    expect(material?.count).toBe(3);
+    // "oi" is a stopword, so none of the three surface forms should show up
+    // as a word of its own.
+    expect(stats.topWords.map((w) => w.label)).not.toContain("oi");
+    expect(stats.topWords.map((w) => w.label)).not.toContain("oiii");
+  });
+
+  it("does not touch a normal double letter ('carro', 'certo')", () => {
+    const stats = analyzeCommentTexts(["quero o carro certo"]);
+    const labels = stats.topWords.map((w) => w.label);
+    expect(labels).toContain("carro");
+    expect(labels).toContain("certo");
+  });
+
+  it("discards a token that collapses down to a single letter ('kkkk' -> 'k')", () => {
+    const stats = analyzeCommentTexts(["kkkk amei o material", "material top"]);
+    const labels = stats.topWords.map((w) => w.label);
+    expect(labels).not.toContain("k");
+    expect(labels).not.toContain("kkkk");
+    const material = stats.topWords.find((w) => w.label === "material");
+    expect(material?.count).toBe(2);
+  });
+
+  it("never forms a bigram with a collapsed single-letter token", () => {
+    const stats = analyzeCommentTexts(["amei kkkk muito"]);
+    const bigrams = stats.topBigrams.map((b) => b.label);
+    expect(bigrams.some((b) => b.includes("k"))).toBe(false);
+  });
+});
+
+describe("analyzeCommentTexts — minCount", () => {
+  it("drops words/bigrams/emojis seen fewer times than minCount", () => {
+    const stats = analyzeCommentTexts(
+      ["material bom", "material", "unico material", "sozinho 🔥"],
+      25,
+      2
+    );
+    const labels = stats.topWords.map((w) => w.label);
+    expect(labels).toContain("material");
+    expect(labels).not.toContain("bom");
+    expect(labels).not.toContain("unico");
+    expect(stats.topEmojis).toEqual([]);
+  });
+
+  it("defaults to minCount 1 (keeps everything) when not given", () => {
+    const stats = analyzeCommentTexts(["material unico"]);
+    expect(stats.topWords.map((w) => w.label)).toEqual(
+      expect.arrayContaining(["material", "unico"])
+    );
+  });
+});
+
+describe("stopwords — greetings and comment filler", () => {
+  it("excludes common greetings and their variants from the word list", () => {
+    const stats = analyzeCommentTexts(["Oi gente, boa tarde, tudo bem?"]);
+    expect(stats.topWords).toEqual([]);
+  });
+
+  it("excludes 'gostaria de saber' style filler", () => {
+    const stats = analyzeCommentTexts([
+      "gostaria de saber qual o preço",
+      "queria saber qual o preço",
+    ]);
+    const labels = stats.topWords.map((w) => w.label);
+    expect(labels).not.toContain("gostaria");
+    expect(labels).not.toContain("queria");
+    expect(labels).not.toContain("saber");
+    const preco = stats.topWords.find((w) => ["preço", "preco"].includes(w.label));
+    expect(preco?.count).toBe(2);
+  });
+
+  it("excludes 'obrigado'/'obrigada'/'gente'/'pessoal'/'rs'", () => {
+    expect(isStopword("obrigado")).toBe(true);
+    expect(isStopword("obrigada")).toBe(true);
+    expect(isStopword("gente")).toBe(true);
+    expect(isStopword("pessoal")).toBe(true);
+    expect(isStopword("rs")).toBe(true);
+  });
+
+  it("never shows 'kkk'/'kkkk' as a word (collapses to the single-letter 'k', discarded)", () => {
+    const stats = analyzeCommentTexts(["kkk muito bom o video"]);
+    expect(stats.topWords.map((w) => w.label)).not.toContain("kkk");
+    expect(stats.topWords.map((w) => w.label)).not.toContain("k");
+  });
+});

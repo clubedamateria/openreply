@@ -7,6 +7,13 @@
  * Emojis are counted separately from words, never mixed into either list.
  * Bigrams keep stopwords on ONE side so natural two-word phrases like
  * "eu quero" survive — only a pair where BOTH words are stopwords is dropped.
+ *
+ * Normalization also collapses a letter repeated 3+ times in a row into one
+ * ("oiii" → "oi", "kkkk" → "k") before grouping, so keyboard-mashing variants
+ * of the same word land in the same bucket instead of splintering the count.
+ * Whatever the collapse leaves as a single letter ("kkkk" → "k") is then
+ * discarded outright — it is noise, not a word, in either the word list or a
+ * bigram.
  */
 
 import { foldDiacritics } from "@/lib/utils/keyword-matcher";
@@ -30,8 +37,16 @@ interface Accumulator {
   surfaceForms: Map<string, number>;
 }
 
+// 3+ of the same letter in a row ("oiii", "kkkk") collapses to one instance.
+// Two in a row ("carro", "certo") is normal pt-br spelling and stays intact.
+const REPEATED_LETTER_PATTERN = /(.)\1{2,}/gu;
+
+function collapseRepeatedLetters(word: string): string {
+  return word.replace(REPEATED_LETTER_PATTERN, "$1");
+}
+
 function normalizeWord(word: string): string {
-  return foldDiacritics(word).toLowerCase();
+  return collapseRepeatedLetters(foldDiacritics(word).toLowerCase());
 }
 
 /** Every emoji (or joined emoji sequence) found in the text, in order. */
@@ -74,8 +89,13 @@ function mostCommonSurface(acc: Accumulator): string {
   return bestSurface;
 }
 
-function toSortedList(map: Map<string, Accumulator>, limit: number): CountedItem[] {
+function toSortedList(
+  map: Map<string, Accumulator>,
+  limit: number,
+  minCount: number
+): CountedItem[] {
   return [...map.values()]
+    .filter((acc) => acc.count >= minCount)
     .map((acc) => ({ label: mostCommonSurface(acc), count: acc.count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, limit);
@@ -91,10 +111,15 @@ export interface CommentTextStats {
  * Tally words, bigrams and emojis across a batch of comment texts.
  *
  * @param limit - how many entries to keep per list (highest count first).
+ * @param minCount - drop entries seen fewer than this many times (default 1,
+ *   i.e. keep everything). The Comentários page passes 2 here: with only a
+ *   handful of comments, a word said once is noise ("Oiii", "de saber"), not
+ *   a pattern.
  */
 export function analyzeCommentTexts(
   texts: string[],
-  limit = 25
+  limit = 25,
+  minCount = 1
 ): CommentTextStats {
   const wordMap = new Map<string, Accumulator>();
   const bigramMap = new Map<string, Accumulator>();
@@ -110,24 +135,29 @@ export function analyzeCommentTexts(
     const tokens = tokenizeWords(text);
     const normalized = tokens.map(normalizeWord);
 
-    tokens.forEach((token, i) => {
-      const key = normalized[i];
-      if (!key || STOPWORDS_PT_BR.has(key)) return;
+    // A key that collapsed down to a single letter ("kkkk" → "k") is dropped
+    // outright, from both the word list and any bigram it would join —
+    // treated the same as punctuation, not as a (very short) word.
+    const kept = tokens
+      .map((token, i) => ({ token, key: normalized[i] }))
+      .filter(({ key }) => key.length > 1);
+
+    kept.forEach(({ token, key }) => {
+      if (STOPWORDS_PT_BR.has(key)) return;
       bump(wordMap, key, token);
     });
 
-    for (let i = 0; i < tokens.length - 1; i++) {
-      const keyA = normalized[i];
-      const keyB = normalized[i + 1];
-      if (!keyA || !keyB) continue;
-      if (STOPWORDS_PT_BR.has(keyA) && STOPWORDS_PT_BR.has(keyB)) continue;
-      bump(bigramMap, `${keyA} ${keyB}`, `${tokens[i]} ${tokens[i + 1]}`);
+    for (let i = 0; i < kept.length - 1; i++) {
+      const a = kept[i];
+      const b = kept[i + 1];
+      if (STOPWORDS_PT_BR.has(a.key) && STOPWORDS_PT_BR.has(b.key)) continue;
+      bump(bigramMap, `${a.key} ${b.key}`, `${a.token} ${b.token}`);
     }
   }
 
   return {
-    topWords: toSortedList(wordMap, limit),
-    topBigrams: toSortedList(bigramMap, limit),
-    topEmojis: toSortedList(emojiMap, limit),
+    topWords: toSortedList(wordMap, limit, minCount),
+    topBigrams: toSortedList(bigramMap, limit, minCount),
+    topEmojis: toSortedList(emojiMap, limit, minCount),
   };
 }

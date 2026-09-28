@@ -90,3 +90,52 @@ export async function recordInstagramComment(
     );
   }
 }
+
+export interface SweepableMedia {
+  id: string;
+  comments_count?: number;
+}
+
+/**
+ * Which media from a listing page are worth fetching comments for. A missing
+ * `comments_count` (the field the Meta Graph API omits from nothing, but the
+ * Zernio provider's post listing never returns at all) is treated as "might
+ * have comments" rather than excluded — we have no way to know without
+ * asking, and skipping it would silently drop every Zernio-connected account
+ * from the sweep.
+ */
+export function selectMediaWithComments<T extends SweepableMedia>(media: T[]): T[] {
+  return media.filter((m) => m.comments_count === undefined || m.comments_count > 0);
+}
+
+/**
+ * Media ids already recorded in `InstagramComment` for an account (typically
+ * ads/dark posts, which a webhook can deliver a comment for but which never
+ * show up in `/me/media`) that a fresh media listing did NOT surface. These
+ * need their own comment sweep, or an ad's history never grows past whatever
+ * arrived by webhook.
+ *
+ * `cap` bounds how many of these extra sweeps a single cron run takes on —
+ * `knownMediaIds` is assumed already ordered by recency (most recent
+ * `commentedAt` first), so the cap keeps the most relevant ones.
+ */
+export function selectMissingMediaIds({
+  knownMediaIds,
+  listedMediaIds,
+  cap = 100,
+}: {
+  knownMediaIds: string[];
+  listedMediaIds: Iterable<string>;
+  cap?: number;
+}): string[] {
+  const listed = new Set(listedMediaIds);
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  for (const id of knownMediaIds) {
+    if (listed.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    missing.push(id);
+    if (missing.length >= cap) break;
+  }
+  return missing;
+}

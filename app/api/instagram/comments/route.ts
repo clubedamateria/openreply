@@ -1,39 +1,68 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
-import { createInstagramContext, getUserMedia } from "@/lib/instagram/provider";
+import {
+  createInstagramContext,
+  getMediaById,
+  type InstagramMedia,
+} from "@/lib/instagram/provider";
+import type { InstagramContext } from "@/lib/instagram/context";
 import { analyzeCommentTexts, type CommentTextStats } from "@/lib/comments/word-stats";
+import { isQuestion } from "@/lib/comments/questions";
 import {
   aggregateKeywordPerformance,
   type CampaignKeywordPerformance,
 } from "@/lib/comments/keyword-performance";
 
 // How many recent comments to show in the feed.
-const RECENT_COMMENTS_LIMIT = 30;
-// Word-stats/keyword-performance are aggregate views, not a full export —
-// capping the row count read for them is what keeps a viral account's
-// comment volume from ballooning this request's memory. totalComments still
-// comes from a separate `count()`, so the number shown is always exact even
-// past this cap.
+const RECENT_COMMENTS_LIMIT = 200;
+// Word-stats/keyword-performance/questions are aggregate views, not a full
+// export — capping the row count read for them is what keeps a viral
+// account's comment volume from ballooning this request's memory.
+// `summary.totalComments` still comes from a separate `count()`, so the
+// number shown is always exact even past this cap.
 const AGGREGATION_ROWS_LIMIT = 20_000;
+// A word/expression said only once, with a handful of comments total, is
+// noise ("Oiii", "de saber"), not a pattern.
+const WORD_STATS_MIN_COUNT = 2;
 const VALID_DAYS = [7, 30, 90] as const;
 type Days = (typeof VALID_DAYS)[number];
+
+export type PostKind = "AD" | "REELS" | "FEED" | "STORY" | null;
 
 export interface CommentsResponse {
   accounts: Array<{ id: string; username: string }>;
   selectedAccountId: string;
   days: Days;
-  totalComments: number;
+  summary: {
+    totalComments: number;
+    /** Distinct commenter usernames in the period. */
+    uniquePeople: number;
+    /** Comments read as a question — see lib/comments/questions.ts. */
+    questions: number;
+    /** Distinct posts (mediaId) with at least one comment in the period. */
+    postsWithComments: number;
+  };
   wordStats: CommentTextStats;
   campaigns: CampaignKeywordPerformance[];
-  recentComments: Array<{
+  comments: Array<{
     id: string;
     text: string;
     username: string | null;
     commentedAt: string;
     mediaId: string;
     accountUsername: string;
+    isQuestion: boolean;
+  }>;
+  posts: Array<{
+    mediaId: string;
+    count: number;
+    lastCommentAt: string;
     permalink: string | null;
+    /** Up to 100 chars. */
+    caption: string | null;
+    kind: PostKind;
+    thumbnailUrl: string | null;
   }>;
 }
 
@@ -44,47 +73,82 @@ function parseDays(value: string | null): Days {
     : 30;
 }
 
-// Permalinks require a live Graph API call (Instagram permalinks are keyed by
-// shortcode, not media id — there is no way to derive one from data already in
-// our database). Cached briefly per account so switching the period selector,
-// or a second visitor, doesn't re-fetch on every request.
-const PERMALINK_CACHE_TTL_MS = 5 * 60 * 1000;
-const permalinkCache = new Map<
+function classifyMediaKind(media: InstagramMedia): PostKind {
+  switch (media.media_product_type) {
+    case "AD":
+    case "REELS":
+    case "STORY":
+    case "FEED":
+      return media.media_product_type;
+    default:
+      // Older media predates `media_product_type` being populated — fall
+      // back to "a feed post", which is what an image/carousel/video with no
+      // product type actually is.
+      return media.media_type ? "FEED" : null;
+  }
+}
+
+const CAPTION_PREVIEW_LENGTH = 100;
+
+function previewCaption(caption: string | undefined): string | null {
+  if (!caption) return null;
+  return caption.length > CAPTION_PREVIEW_LENGTH
+    ? `${caption.slice(0, CAPTION_PREVIEW_LENGTH)}…`
+    : caption;
+}
+
+interface MediaDetail {
+  permalink: string | null;
+  caption: string | null;
+  kind: PostKind;
+  thumbnailUrl: string | null;
+}
+
+// Per-mediaId cache (media ids are globally unique on Instagram, so no
+// account-scoping needed): switching the period selector, or a second
+// visitor, doesn't re-fetch the same post's Graph details within the hour.
+const MEDIA_DETAIL_CACHE_TTL_MS = 60 * 60 * 1000;
+const mediaDetailCache = new Map<
   string,
-  { expiresAt: number; map: Map<string, string> }
+  { expiresAt: number; detail: MediaDetail | null }
 >();
+// A single request never looks up more than this many distinct mediaIds via
+// the Graph API — bounds worst-case request latency/cost regardless of how
+// many distinct posts the period's comments touch.
+const MEDIA_DETAIL_FETCH_CAP = 30;
 
-async function getPermalinkMap(account: {
-  id: string;
-  provider: "META" | "ZERNIO";
-  workspaceId: string;
-  zernioAccountId: string | null;
-  instagramId: string;
-  accessToken: string;
-}): Promise<Map<string, string>> {
-  const cached = permalinkCache.get(account.id);
-  if (cached && cached.expiresAt > Date.now()) return cached.map;
+async function getMediaDetail(
+  mediaId: string,
+  context: InstagramContext
+): Promise<MediaDetail | null> {
+  const cached = mediaDetailCache.get(mediaId);
+  if (cached && cached.expiresAt > Date.now()) return cached.detail;
 
+  let detail: MediaDetail | null;
   try {
-    const context = await createInstagramContext(account);
-    const media = await getUserMedia({ context, limit: 30 });
-    const map = new Map(
-      media
-        .filter((m): m is typeof m & { permalink: string } => Boolean(m.permalink))
-        .map((m) => [m.id, m.permalink])
-    );
-    permalinkCache.set(account.id, {
-      expiresAt: Date.now() + PERMALINK_CACHE_TTL_MS,
-      map,
-    });
-    return map;
+    const media = await getMediaById({ context, mediaId });
+    detail = media
+      ? {
+          permalink: media.permalink ?? null,
+          caption: previewCaption(media.caption),
+          kind: classifyMediaKind(media),
+          thumbnailUrl: media.thumbnail_url ?? media.media_url ?? null,
+        }
+      : null;
   } catch (error) {
     console.warn(
-      "[Instagram Comments] Permalink lookup failed:",
+      "[Instagram Comments] Media detail lookup failed:",
+      mediaId,
       error instanceof Error ? error.message : error
     );
-    return new Map();
+    detail = null;
   }
+
+  mediaDetailCache.set(mediaId, {
+    expiresAt: Date.now() + MEDIA_DETAIL_CACHE_TTL_MS,
+    detail,
+  });
+  return detail;
 }
 
 export async function GET(request: NextRequest) {
@@ -121,14 +185,27 @@ export async function GET(request: NextRequest) {
       instagramAccount: { workspaceId, ...accountScope },
     };
 
-    // Three separate, narrow queries instead of one unbounded one embedding
-    // full account rows (including accessToken) per comment: totalComments
-    // is an exact count (never truncated by the aggregation cap below), the
-    // aggregation read only pulls `text` (all it needs) capped at
-    // AGGREGATION_ROWS_LIMIT, and the recent-comments feed is its own
-    // take:30 query with no credentials in it at all.
-    const [totalComments, aggregationRows, recentRows] = await Promise.all([
+    // Five narrow, purpose-built queries instead of one unbounded one
+    // embedding full account rows (including accessToken) per comment:
+    // totalComments/uniquePeople/postsWithComments are exact (never
+    // truncated by the aggregation cap below); the text-only read for
+    // wordStats/questions is capped at AGGREGATION_ROWS_LIMIT; the recent
+    // comments feed and the per-post ranking are their own bounded queries
+    // with no credentials in them at all.
+    const [
+      totalComments,
+      uniqueUsernameRows,
+      aggregationRows,
+      recentRows,
+      postGroups,
+    ] = await Promise.all([
       prisma.instagramComment.count({ where: commentWhere }),
+      prisma.instagramComment.findMany({
+        where: { ...commentWhere, username: { not: null } },
+        distinct: ["username"],
+        select: { username: true },
+        take: AGGREGATION_ROWS_LIMIT,
+      }),
       prisma.instagramComment.findMany({
         where: commentWhere,
         select: { text: true },
@@ -148,9 +225,29 @@ export async function GET(request: NextRequest) {
           instagramAccount: { select: { username: true } },
         },
       }),
+      prisma.instagramComment.groupBy({
+        by: ["mediaId", "instagramAccountId"],
+        where: commentWhere,
+        _count: { _all: true },
+        _max: { commentedAt: true },
+        // `orderBy` is required by Prisma whenever `take` is set on a
+        // groupBy; the real "top 20 by count" ordering is done in JS below
+        // (`_count._all` across BOTH group-by fields isn't directly
+        // orderable), so this just needs to be deterministic, not
+        // meaningful.
+        orderBy: { _count: { id: "desc" } },
+        take: AGGREGATION_ROWS_LIMIT,
+      }),
     ]);
 
-    const wordStats = analyzeCommentTexts(aggregationRows.map((c) => c.text));
+    const wordStats = analyzeCommentTexts(
+      aggregationRows.map((c) => c.text),
+      25,
+      WORD_STATS_MIN_COUNT
+    );
+    // Same cap/precedent as wordStats: an exact count would need reading
+    // every comment in the period, not just the aggregation sample.
+    const questionsCount = aggregationRows.filter((c) => isQuestion(c.text)).length;
 
     const automations = await prisma.automation.findMany({
       where: {
@@ -201,10 +298,24 @@ export async function GET(request: NextRequest) {
       clicksByAutomation,
     });
 
+    // Rank every distinct post that had a comment in the period, keep the
+    // top 20 for the response, but remember all of them for the exact
+    // `postsWithComments` count.
+    const rankedPostGroups = [...postGroups].sort(
+      (a, b) => b._count._all - a._count._all
+    );
+    const topPostGroups = rankedPostGroups.slice(0, 20);
+
     // Credentials (accessToken included) are fetched in exactly one query,
-    // for exactly the handful of distinct accounts behind these 30 recent
-    // comments — never embedded in the per-comment rows above.
-    const distinctAccountIds = [...new Set(recentRows.map((c) => c.instagramAccountId))];
+    // for exactly the handful of distinct accounts behind the top posts and
+    // the recent-comments feed — never embedded in the per-comment rows
+    // fetched above.
+    const distinctAccountIds = [
+      ...new Set([
+        ...topPostGroups.map((g) => g.instagramAccountId),
+        ...recentRows.map((c) => c.instagramAccountId),
+      ]),
+    ];
     const credentialAccounts = distinctAccountIds.length
       ? await prisma.instagramAccount.findMany({
           where: { id: { in: distinctAccountIds } },
@@ -218,33 +329,95 @@ export async function GET(request: NextRequest) {
           },
         })
       : [];
+    const accountsById = new Map(credentialAccounts.map((a) => [a.id, a]));
 
-    const permalinkMaps = new Map(
-      await Promise.all(
-        credentialAccounts.map(
-          async (account) => [account.id, await getPermalinkMap(account)] as const
-        )
-      )
+    // One Instagram/Zernio context per account, reused across every media
+    // detail lookup for that account instead of re-decrypting the token (or,
+    // for Zernio, re-reading the workspace connection) per mediaId.
+    const contextCache = new Map<string, Promise<InstagramContext> | null>();
+    function contextFor(accountId: string): Promise<InstagramContext> | null {
+      if (contextCache.has(accountId)) return contextCache.get(accountId)!;
+      const account = accountsById.get(accountId);
+      const promise = account ? createInstagramContext(account) : null;
+      contextCache.set(accountId, promise);
+      return promise;
+    }
+
+    // Fetch details for at most MEDIA_DETAIL_FETCH_CAP distinct mediaIds,
+    // prioritizing the top posts (what `posts` needs) and filling any
+    // remaining slots with mediaIds from the recent-comments feed (so a
+    // brand-new, not-yet-top-20 post referenced by a recent comment can
+    // still resolve its context in the common case where the account has
+    // few enough distinct posts in the period to fit under the cap).
+    const mediaIdsToFetch: Array<{ mediaId: string; instagramAccountId: string }> = [];
+    const seenMediaIds = new Set<string>();
+    function queueMediaId(mediaId: string, instagramAccountId: string) {
+      if (seenMediaIds.has(mediaId)) return;
+      if (mediaIdsToFetch.length >= MEDIA_DETAIL_FETCH_CAP) return;
+      seenMediaIds.add(mediaId);
+      mediaIdsToFetch.push({ mediaId, instagramAccountId });
+    }
+    for (const group of topPostGroups) {
+      queueMediaId(group.mediaId, group.instagramAccountId);
+    }
+    for (const row of recentRows) {
+      queueMediaId(row.mediaId, row.instagramAccountId);
+    }
+
+    const mediaDetails = new Map<string, MediaDetail | null>();
+    await Promise.all(
+      mediaIdsToFetch.map(async ({ mediaId, instagramAccountId }) => {
+        const contextPromise = contextFor(instagramAccountId);
+        if (!contextPromise) {
+          mediaDetails.set(mediaId, null);
+          return;
+        }
+        try {
+          const context = await contextPromise;
+          mediaDetails.set(mediaId, await getMediaDetail(mediaId, context));
+        } catch {
+          mediaDetails.set(mediaId, null);
+        }
+      })
     );
 
-    const recentComments = recentRows.map((c) => ({
+    const posts: CommentsResponse["posts"] = topPostGroups.map((group) => {
+      const detail = mediaDetails.get(group.mediaId) ?? null;
+      return {
+        mediaId: group.mediaId,
+        count: group._count._all,
+        lastCommentAt: (group._max.commentedAt ?? new Date(0)).toISOString(),
+        permalink: detail?.permalink ?? null,
+        caption: detail?.caption ?? null,
+        kind: detail?.kind ?? null,
+        thumbnailUrl: detail?.thumbnailUrl ?? null,
+      };
+    });
+
+    const comments: CommentsResponse["comments"] = recentRows.map((c) => ({
       id: c.id,
       text: c.text,
       username: c.username,
       commentedAt: c.commentedAt.toISOString(),
       mediaId: c.mediaId,
       accountUsername: c.instagramAccount.username,
-      permalink: permalinkMaps.get(c.instagramAccountId)?.get(c.mediaId) ?? null,
+      isQuestion: isQuestion(c.text),
     }));
 
     const data: CommentsResponse = {
       accounts,
       selectedAccountId,
       days,
-      totalComments,
+      summary: {
+        totalComments,
+        uniquePeople: uniqueUsernameRows.length,
+        questions: questionsCount,
+        postsWithComments: rankedPostGroups.length,
+      },
       wordStats,
       campaigns,
-      recentComments,
+      comments,
+      posts,
     };
 
     return NextResponse.json({ success: true, data });
