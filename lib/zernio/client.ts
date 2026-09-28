@@ -7,10 +7,21 @@ import {
 export class ZernioApiError extends MetaApiError {
   constructor(status: number) {
     super(
+      // `code` mirrors the HTTP status here (Zernio has no separate
+      // Meta-style numeric error code) — lib/queue/dm-worker.ts and
+      // lib/instagram/send-messages.ts's pre-existing Zernio-inbox flow
+      // branch on `.code`, so that value is unchanged by this fix.
       status,
       undefined,
       undefined,
-      `Zernio request failed (HTTP ${status})`
+      `Zernio request failed (HTTP ${status})`,
+      // Rodada 5, achado 1: `httpStatus` was left at MetaApiError's own
+      // default (0) here, so `isExplicit4xxMetaError` in
+      // lib/scheduled-posts/engine.ts NEVER recognized a Zernio 4xx as an
+      // explicit rejection — every one of them fell into the "ambiguous"
+      // branch instead, leaving the row stuck in PUBLISHING rather than
+      // failing immediately.
+      status
     );
     this.name = "ZernioApiError";
   }
@@ -25,18 +36,27 @@ export class ZernioDeliveryUnconfirmedError extends ZernioApiError {
   }
 }
 
+// Rodada 5, achado 4: `publishNow: true` on POST /posts is synchronous and
+// waits for TikTok/YouTube to actually finish (TikTok took ~18s for real in
+// testing; a YouTube upload happens inside the same call too) — the default
+// 30s used by every other Zernio call is too short for that one endpoint.
+const DEFAULT_ZERNIO_TIMEOUT_MS = 30_000;
+export const ZERNIO_CREATE_POST_TIMEOUT_MS = 240_000;
+
 export async function zernioRequest<T>({
   apiKey,
   path,
   method = "GET",
   body,
   idempotencyKey,
+  timeoutMs = DEFAULT_ZERNIO_TIMEOUT_MS,
 }: {
   apiKey: string;
   path: string;
   method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: unknown;
   idempotencyKey?: string;
+  timeoutMs?: number;
 }): Promise<T> {
   if (!path.startsWith("/") || path.startsWith("//"))
     throw new Error("Invalid Zernio API path");
@@ -49,7 +69,7 @@ export async function zernioRequest<T>({
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     cache: "no-store",
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   }).catch(() => {
     throw new ZernioApiError(502);
   });
@@ -112,6 +132,14 @@ export interface ZernioPost {
   content?: string;
   mediaItems?: { type?: string; url?: string }[];
   createdAt?: string;
+  /** Rodada 5, achado 3: free-form key/value pairs echoed back on reads
+   * (docs.zernio.com's create-post reference: "stored on the post and
+   * returned on reads and in webhook payloads") — confirmed for `POST
+   * /posts`'s own request body; NOT shown in the list-posts/get-post
+   * response examples in the doc, so every reader treats its absence as
+   * "can't match by metadata, fall back to content+media+window" rather than
+   * as proof the post lacks one. */
+  metadata?: Record<string, string>;
 }
 
 export interface TikTokSettingsPayload {
