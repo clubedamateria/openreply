@@ -422,7 +422,19 @@ model PostbackDelivery {
 model ScheduledPost {
   id                 String                @id @default(cuid())
   workspaceId        String
-  instagramAccountId String
+  /// Fase 4: required for INSTAGRAM, always null for TIKTOK/YOUTUBE (checked
+  /// in app code — lib/scheduled-posts/schema.ts — and, where the migration
+  /// can express it, by a CHECK constraint; see
+  /// prisma/migrations/20260928120000_zernio_platforms). Still doubles as the
+  /// "context account" the panel/CLI use to resolve `workspaceId`, even for a
+  /// row whose own destination is TikTok/YouTube — see
+  /// app/api/scheduled-posts/route.ts.
+  instagramAccountId String?
+  /// Fase 4: which destination this row publishes to. INSTAGRAM keeps the
+  /// original two-phase container flow (prepareDuePosts/publishReadyPosts);
+  /// TIKTOK/YOUTUBE go straight from SCHEDULED to PUBLISHING through Zernio
+  /// (lib/zernio/client.ts) — see lib/scheduled-posts/engine.ts.
+  platform           ScheduledPostPlatform @default(INSTAGRAM)
   mediaType          ScheduledPostMediaType
 
   /// Order matters for CAROUSEL: it is the slide order. One entry for
@@ -458,7 +470,26 @@ model ScheduledPost {
   /// Set only once media_publish succeeds. A non-null mediaId means
   /// media_publish must never be called again for this row.
   mediaId           String? @unique
+  /// Reused for Fase 4 (TIKTOK/YOUTUBE): the platform post URL
+  /// (`platforms[0].platformPostUrl`, filled in once Zernio resolves it — it
+  /// comes back `null` right after publishing) instead of the Instagram
+  /// permalink.
   permalink         String?
+  /// Fase 4 only. The account this row publishes to on Zernio — resolved
+  /// server-side from env (getZernioAccountIdForPlatform), never taken from
+  /// client input. Set together with `platform: TIKTOK|YOUTUBE`.
+  zernioAccountId   String?
+  /// Fase 4 only. The Zernio post id (`post._id` from `POST /posts`),
+  /// written the instant the request succeeds — before we even know whether
+  /// TikTok/YouTube itself finished publishing — so a later tick never calls
+  /// `POST /posts` again for this row (see reconcileZernioPublishing).
+  /// `@unique` since present: two rows can never legitimately share one.
+  zernioPostId      String? @unique
+  /// Fase 4 only: `{ privacyLevel, allowComment, allowDuet, allowStitch,
+  /// consentGiven }` for TIKTOK, `{ title, visibility, madeForKids }` for
+  /// YOUTUBE — see lib/scheduled-posts/schema.ts for the zod shapes this is
+  /// validated against on write and parsed with on read.
+  platformSettings Json?
 
   attempts     Int       @default(0)
   errorMessage String?
@@ -479,18 +510,27 @@ model ScheduledPost {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instagramAccount InstagramAccount? @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
 
   @@index([status, scheduledFor])
   @@index([workspaceId])
   @@index([contentHash], type: Gin)
+  @@index([platform, zernioAccountId])
 }
 
 enum ScheduledPostMediaType {
   REELS
   IMAGE
   CAROUSEL
+}
+
+/// Fase 4: publish destination. INSTAGRAM via the Meta Graph API (unchanged
+/// two-phase flow); TIKTOK/YOUTUBE (YouTube Shorts) via Zernio.
+enum ScheduledPostPlatform {
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE
 }
 
 enum ScheduledPostStatus {
