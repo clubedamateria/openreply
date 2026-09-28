@@ -63,6 +63,10 @@ export default function AgendadosPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reschedulingId, setReschedulingId] = useState<string | null>(null);
   const [rescheduleValue, setRescheduleValue] = useState("");
+  // Set when a retry/reschedule comes back 409 with `outcomeUncertain: true`
+  // (checkRetrySafety in the API route) — the next click on that same row
+  // sends `force: true`, the "I already checked" override.
+  const [uncertainActionId, setUncertainActionId] = useState<string | null>(null);
 
   const load = useCallback(() => {
     const params = new URLSearchParams();
@@ -108,8 +112,10 @@ export default function AgendadosPage() {
       const json = await res.json();
       if (!res.ok || !json.success) {
         setError(json.error ?? "Ação falhou");
+        setUncertainActionId(json.outcomeUncertain ? id : null);
         return;
       }
+      setUncertainActionId(null);
       load();
     } finally {
       setBusyId(null);
@@ -231,6 +237,12 @@ export default function AgendadosPage() {
                       {post.status === "FAILED" && post.errorMessage && (
                         <p className="mt-1 text-xs text-error">{post.errorMessage}</p>
                       )}
+                      {post.status === "FAILED" && post.outcomeUncertain && (
+                        <p className="mt-1 flex items-center gap-1 text-xs text-warning">
+                          <AlertTriangle size={12} aria-hidden="true" />
+                          Não deu para confirmar se isso já foi publicado no Instagram — confira antes de tentar de novo.
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
@@ -256,17 +268,28 @@ export default function AgendadosPage() {
                           Publicar agora
                         </button>
                       )}
-                      {post.status === "FAILED" && (
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => runAction(post.id, { action: "retry" })}
-                          className="btn btn-secondary btn-sm"
-                        >
-                          <RotateCcw size={14} aria-hidden="true" />
-                          Tentar de novo
-                        </button>
-                      )}
+                      {post.status === "FAILED" &&
+                        (uncertainActionId === post.id ? (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => runAction(post.id, { action: "retry", force: true })}
+                            className="btn btn-secondary btn-sm text-warning"
+                          >
+                            <RotateCcw size={14} aria-hidden="true" />
+                            Já conferi, publicar de novo
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => runAction(post.id, { action: "retry" })}
+                            className="btn btn-secondary btn-sm"
+                          >
+                            <RotateCcw size={14} aria-hidden="true" />
+                            Tentar de novo
+                          </button>
+                        ))}
                       {(post.status === "SCHEDULED" || post.status === "FAILED") &&
                         (reschedulingId === post.id ? (
                           <span className="inline-flex items-center gap-1.5">
@@ -284,6 +307,7 @@ export default function AgendadosPage() {
                                 runAction(post.id, {
                                   action: "reschedule",
                                   scheduledFor: saoPauloToUtcIso(datePart, timePart),
+                                  force: uncertainActionId === post.id,
                                 });
                               }}
                               className="btn btn-primary btn-sm"
