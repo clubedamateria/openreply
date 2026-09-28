@@ -23,13 +23,19 @@ fi
 
 call() {
   route="$1"
+  # Rodada 5, achado 4: publish-scheduled's own createZernioPost call can now
+  # take up to 240s (ZERNIO_CREATE_POST_TIMEOUT_MS), and up to
+  # MAX_ZERNIO_PUBLISH_PER_TICK (3) of those can happen in the same tick,
+  # after Instagram's own two phases — 180s was already tight for Instagram
+  # alone, so this route gets a longer budget. Every other route keeps 180s.
+  timeout="${2:-180}"
   stamp=$(date -u '+%Y-%m-%d %H:%M:%S')
 
   # --tries=1: a single retry loop of ours (the `while true` below, once a
   # minute/day) is already the retry strategy — wget's own default retries
   # would otherwise stack additional attempts on top of that and can leave a
   # call still running well past when the next tick was due.
-  if body=$(wget -q -O- --timeout=180 --tries=1 \
+  if body=$(wget -q -O- --timeout="$timeout" --tries=1 \
       --header="Authorization: Bearer $SECRET" \
       "$BASE_URL/api/cron/$route" 2>&1); then
     echo "[cron] $stamp $route ok $body"
@@ -56,7 +62,7 @@ while true; do
   # missed slot means a post going out late, not just a delayed refresh.
   if [ "$last_minute" != "$hhmm" ]; then
     last_minute="$hhmm"
-    call publish-scheduled
+    call publish-scheduled 600
   fi
 
   # attach-next-reel every 5 minutes rather than once a day: a campaign created
