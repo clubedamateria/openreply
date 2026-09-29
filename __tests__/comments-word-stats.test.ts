@@ -7,6 +7,7 @@ import {
   analyzeCommentTexts,
   extractEmojis,
   isStopword,
+  normalizeWord,
   tokenizeWords,
 } from "../lib/comments/word-stats";
 
@@ -253,5 +254,40 @@ describe("stopwords — greetings and comment filler", () => {
     const stats = analyzeCommentTexts(["kkk muito bom o video"]);
     expect(stats.topWords.map((w) => w.label)).not.toContain("kkk");
     expect(stats.topWords.map((w) => w.label)).not.toContain("k");
+  });
+});
+
+describe("analyzeCommentTexts — excludeKeys (campaign keywords)", () => {
+  it("drops a word matching an excluded key", () => {
+    const stats = analyzeCommentTexts(
+      ["quero clube muito", "quero clube muito"],
+      25,
+      1,
+      new Set(["clube"])
+    );
+    const labels = stats.topWords.map((w) => w.label);
+    expect(labels).not.toContain("clube");
+    expect(labels).toContain("quero");
+  });
+
+  it("drops a bigram containing an excluded key even when only one side matches", () => {
+    const stats = analyzeCommentTexts(
+      ["quero clube muito"],
+      25,
+      1,
+      new Set(["clube"])
+    );
+    const bigrams = stats.topBigrams.map((b) => b.label);
+    expect(bigrams.some((b) => b.includes("clube"))).toBe(false);
+  });
+
+  it("matches the same normalized key space as normalizeWord (accent/case-insensitive)", () => {
+    const stats = analyzeCommentTexts(["Clube", "Clube"], 25, 1, new Set([normalizeWord("Clube")]));
+    expect(stats.topWords).toEqual([]);
+  });
+
+  it("does not affect words/bigrams when excludeKeys is omitted", () => {
+    const stats = analyzeCommentTexts(["quero clube muito", "quero clube muito"]);
+    expect(stats.topWords.map((w) => w.label)).toContain("clube");
   });
 });

@@ -45,7 +45,14 @@ function collapseRepeatedLetters(word: string): string {
   return word.replace(REPEATED_LETTER_PATTERN, "$1");
 }
 
-function normalizeWord(word: string): string {
+/**
+ * Fold a single word to the key `analyzeCommentTexts` groups it under (fold
+ * diacritics + lowercase + collapse a 3+ repeated letter). Exported so the
+ * Comentários route can build a campaign-keyword exclusion set in the exact
+ * same key space — a keyword of "Clube" needs to cancel out the word map's
+ * own "clube" key, not some other normalization of it.
+ */
+export function normalizeWord(word: string): string {
   return collapseRepeatedLetters(foldDiacritics(word).toLowerCase());
 }
 
@@ -115,11 +122,21 @@ export interface CommentTextStats {
  *   i.e. keep everything). The Comentários page passes 2 here: with only a
  *   handful of comments, a word said once is noise ("Oiii", "de saber"), not
  *   a pattern.
+ * @param excludeKeys - normalized keys (see `normalizeWord`) to leave out of
+ *   both the word list and any bigram they would join, on top of the usual
+ *   pt-br stopwords. The Comentários page passes every campaign keyword
+ *   here: a keyword blast ("Clube" ×25) is a DM trigger, not a topic, and
+ *   should not out-rank what the audience actually talks about — nor should
+ *   it survive tucked inside a bigram ("quero clube") a non-keyword-only
+ *   comment happens to contain. Unlike the stopword rule (drops a bigram
+ *   only when BOTH sides are stopwords), a single excluded side is enough to
+ *   drop the whole bigram.
  */
 export function analyzeCommentTexts(
   texts: string[],
   limit = 25,
-  minCount = 1
+  minCount = 1,
+  excludeKeys?: ReadonlySet<string>
 ): CommentTextStats {
   const wordMap = new Map<string, Accumulator>();
   const bigramMap = new Map<string, Accumulator>();
@@ -143,7 +160,7 @@ export function analyzeCommentTexts(
       .filter(({ key }) => key.length > 1);
 
     kept.forEach(({ token, key }) => {
-      if (STOPWORDS_PT_BR.has(key)) return;
+      if (STOPWORDS_PT_BR.has(key) || excludeKeys?.has(key)) return;
       bump(wordMap, key, token);
     });
 
@@ -151,6 +168,7 @@ export function analyzeCommentTexts(
       const a = kept[i];
       const b = kept[i + 1];
       if (STOPWORDS_PT_BR.has(a.key) && STOPWORDS_PT_BR.has(b.key)) continue;
+      if (excludeKeys?.has(a.key) || excludeKeys?.has(b.key)) continue;
       bump(bigramMap, `${a.key} ${b.key}`, `${a.token} ${b.token}`);
     }
   }

@@ -477,3 +477,22 @@ num dia; anúncio/dark-post nunca aparece em `/me/media`). Branch
 - `npm run typecheck`, `npm run lint` e `npm test` verdes (406 testes, 37
   novos). `npx prisma generate` precisa rodar neste worktree antes (client
   vai para `app/generated/prisma`, não commitado).
+
+## Rodada 2: keyword de campanha some dos temas, vira grupo (2026-09-28)
+
+Em produção, 25 de 38 comentários eram só "Clube" (a keyword que dispara a DM
+do carrossel) e dominavam "Do que o público fala"/"Todos os comentários".
+`lib/comments/keyword-only.ts` (novo): `isKeywordOnlyComment(text, keywords)`
+e `matchKeywordOnly` (puras, normalização igual ao `matchKeywords` da
+campanha) — true quando o comentário, sem @menção/emoji/pontuação, é
+exatamente a keyword (ou ela repetida, "clube clube"). `wordStats` calcula só
+com os não-keyword-only e ganhou `excludeKeys` (`analyzeCommentTexts`) pra
+tirar a keyword mesmo de dentro de uma palavra/bigrama de um comentário
+normal. Resposta ganhou `summary.keywordOnly` e `keywordGroups` (por
+automação+keyword, forma mais usada, contagem no período inteiro). Na tela,
+keyword-only fica escondido por padrão em "Todos os comentários", com uma
+linha por grupo ("25 pessoas comentaram 'Clube' ... · Mostrar") que revela
+só os comentários daquele grupo (reaproveita `matchKeywordOnly` no cliente
+pra saber de qual grupo cada comentário escondido é). Testes novos: 16 em
+`comments-keyword-only.test.ts` + 4 de `excludeKeys` em
+`comments-word-stats.test.ts` (508 testes no total, todos verdes).

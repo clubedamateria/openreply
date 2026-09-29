@@ -19,9 +19,11 @@ import {
 import AccountSelect from "@/components/account-select";
 import StatCard from "@/components/stat-card";
 import type { CommentsResponse, PostKind } from "@/app/api/instagram/comments/route";
+import { matchKeywordOnly } from "@/lib/comments/keyword-only";
 
 type PostSummary = CommentsResponse["posts"][number];
 type CommentSummary = CommentsResponse["comments"][number];
+type KeywordGroup = CommentsResponse["keywordGroups"][number];
 
 const DAYS_OPTIONS = [
   { value: "7", label: "Últimos 7 dias" },
@@ -64,6 +66,10 @@ function formatDate(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function keywordGroupKey(group: KeywordGroup): string {
+  return `${group.automationName}::${group.keyword}`;
 }
 
 function PostBadge({ kind }: { kind: PostKind }) {
@@ -116,6 +122,9 @@ export default function ComentariosPage() {
   const [accountId, setAccountId] = useState("all");
   const [commentFilter, setCommentFilter] = useState<"all" | "questions">("all");
   const [visibleCount, setVisibleCount] = useState(COMMENTS_PAGE_SIZE);
+  // Which keyword groups the dono chose to reveal ("25 pessoas comentaram
+  // 'Clube' · Mostrar") — every group starts hidden.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const params = new URLSearchParams({ days });
@@ -129,6 +138,7 @@ export default function ComentariosPage() {
           setError(null);
           setCommentFilter("all");
           setVisibleCount(COMMENTS_PAGE_SIZE);
+          setExpandedGroups(new Set());
         } else {
           setError(res.error ?? "Falha ao carregar os comentários");
         }
@@ -155,10 +165,50 @@ export default function ComentariosPage() {
     [data?.wordStats]
   );
 
+  // Which group (if any) a keyword-only comment belongs to, so its "Mostrar"
+  // toggle can reveal exactly its own comments and no one else's. Reuses the
+  // very same matcher the API uses server-side — `group.keyword` is the
+  // surface form actually typed, but the matcher folds case/accent on both
+  // sides anyway, so passing it back in as "the keyword" to check against
+  // still matches correctly.
+  const commentGroupKey = useMemo(() => {
+    const map = new Map<string, string>();
+    const groups = data?.keywordGroups ?? [];
+    if (groups.length === 0) return map;
+    for (const comment of data?.comments ?? []) {
+      if (!comment.isKeywordOnly) continue;
+      for (const group of groups) {
+        if (matchKeywordOnly(comment.text, [group.keyword])) {
+          map.set(comment.id, keywordGroupKey(group));
+          break;
+        }
+      }
+    }
+    return map;
+  }, [data?.comments, data?.keywordGroups]);
+
   const filteredComments = useMemo(() => {
     const list = data?.comments ?? [];
-    return commentFilter === "questions" ? list.filter((c) => c.isQuestion) : list;
-  }, [data?.comments, commentFilter]);
+    const byQuestion = commentFilter === "questions" ? list.filter((c) => c.isQuestion) : list;
+    // Keyword-only comments stay out of the list until their group is
+    // revealed — a comment that is keyword-only but, for whatever reason,
+    // doesn't resolve to any group stays hidden too (safe default).
+    return byQuestion.filter((c) => {
+      if (!c.isKeywordOnly) return true;
+      const key = commentGroupKey.get(c.id);
+      return key ? expandedGroups.has(key) : false;
+    });
+  }, [data?.comments, commentFilter, commentGroupKey, expandedGroups]);
+
+  function toggleKeywordGroup(key: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    setVisibleCount(COMMENTS_PAGE_SIZE);
+  }
 
   function handleDaysChange(next: string) {
     setLoading(true);
@@ -347,7 +397,7 @@ export default function ComentariosPage() {
 
         <div className="card p-4 sm:p-6">
           <h2 className="mb-4 text-sm font-bold text-foreground">Do que o público fala</h2>
-          {data.summary.totalComments < MIN_COMMENTS_FOR_TOPICS && (
+          {data.summary.totalComments - data.summary.keywordOnly < MIN_COMMENTS_FOR_TOPICS && (
             <p className="mb-4 text-xs text-muted">
               Com poucos comentários ainda não dá pra ver padrão. Os temas aparecem a partir de
               20 comentários.
@@ -408,6 +458,29 @@ export default function ComentariosPage() {
             ))}
           </div>
         </div>
+        {commentFilter === "all" && data.keywordGroups.length > 0 && (
+          <div className="mb-4 space-y-1.5">
+            {data.keywordGroups.map((group) => {
+              const key = keywordGroupKey(group);
+              const expanded = expandedGroups.has(key);
+              return (
+                <p key={key} className="text-xs text-muted">
+                  {formatNumber(group.count)} pessoa{group.count === 1 ? "" : "s"}{" "}
+                  {group.count === 1 ? "comentou" : "comentaram"} &quot;{group.keyword}&quot; para
+                  receber a DM ({group.automationName})
+                  {" · "}
+                  <button
+                    type="button"
+                    onClick={() => toggleKeywordGroup(key)}
+                    className="font-medium text-accent hover:underline"
+                  >
+                    {expanded ? "Ocultar" : "Mostrar"}
+                  </button>
+                </p>
+              );
+            })}
+          </div>
+        )}
         {filteredComments.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted">Nenhum comentário no período.</p>
         ) : (

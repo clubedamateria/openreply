@@ -7,8 +7,14 @@ import {
   type InstagramMedia,
 } from "@/lib/instagram/provider";
 import type { InstagramContext } from "@/lib/instagram/context";
-import { analyzeCommentTexts, type CommentTextStats } from "@/lib/comments/word-stats";
+import {
+  analyzeCommentTexts,
+  normalizeWord,
+  tokenizeWords,
+  type CommentTextStats,
+} from "@/lib/comments/word-stats";
 import { isQuestion } from "@/lib/comments/questions";
+import { isKeywordOnlyComment, matchKeywordOnly } from "@/lib/comments/keyword-only";
 import {
   aggregateKeywordPerformance,
   type CampaignKeywordPerformance,
@@ -42,9 +48,28 @@ export interface CommentsResponse {
     questions: number;
     /** Distinct posts (mediaId) with at least one comment in the period. */
     postsWithComments: number;
+    /**
+     * Comments that are ONLY a campaign keyword (or that keyword repeated) —
+     * see lib/comments/keyword-only.ts. Approximate past
+     * AGGREGATION_ROWS_LIMIT, same caveat as `questions`.
+     */
+    keywordOnly: number;
   };
   wordStats: CommentTextStats;
   campaigns: CampaignKeywordPerformance[];
+  /**
+   * One row per (automation, keyword) that had at least one keyword-only
+   * comment in the period — e.g. "25 pessoas comentaram 'Clube' para
+   * receber a DM (campanha X)". Counted over the whole period (the
+   * aggregation read), not just the 200 comments below.
+   */
+  keywordGroups: Array<{
+    /** Most common surface form the audience typed. */
+    keyword: string;
+    count: number;
+    automationName: string;
+    lastCommentAt: string;
+  }>;
   comments: Array<{
     id: string;
     text: string;
@@ -53,6 +78,7 @@ export interface CommentsResponse {
     mediaId: string;
     accountUsername: string;
     isQuestion: boolean;
+    isKeywordOnly: boolean;
   }>;
   posts: Array<{
     mediaId: string;
@@ -208,7 +234,7 @@ export async function GET(request: NextRequest) {
       }),
       prisma.instagramComment.findMany({
         where: commentWhere,
-        select: { text: true },
+        select: { text: true, commentedAt: true },
         take: AGGREGATION_ROWS_LIMIT,
       }),
       prisma.instagramComment.findMany({
@@ -240,15 +266,6 @@ export async function GET(request: NextRequest) {
       }),
     ]);
 
-    const wordStats = analyzeCommentTexts(
-      aggregationRows.map((c) => c.text),
-      25,
-      WORD_STATS_MIN_COUNT
-    );
-    // Same cap/precedent as wordStats: an exact count would need reading
-    // every comment in the period, not just the aggregation sample.
-    const questionsCount = aggregationRows.filter((c) => isQuestion(c.text)).length;
-
     const automations = await prisma.automation.findMany({
       where: {
         workspaceId,
@@ -256,9 +273,104 @@ export async function GET(request: NextRequest) {
           ? { instagramAccountId: selectedAccountId }
           : {}),
       },
-      select: { id: true, name: true },
+      select: { id: true, name: true, keywords: true },
     });
     const automationIds = automations.map((a) => a.id);
+
+    // Every campaign keyword in scope, merged into one pool — a keyword
+    // blast ("Clube" ×25) is a DM trigger, not something the audience is
+    // saying about the product, so it gets pulled out of wordStats and out
+    // of the main comment feed (see keywordGroups below for where it goes
+    // instead).
+    const allKeywords = [
+      ...new Set(
+        automations.flatMap((a) => a.keywords).map((k) => k.trim()).filter(Boolean)
+      ),
+    ];
+    // Individual word tokens of every keyword, in the same normalized key
+    // space as wordStats' own word/bigram maps — this is what lets a
+    // non-keyword-only comment ("quero clube muito") still have "clube"
+    // scrubbed out of the word list and out of any bigram it would join.
+    const keywordWordKeys = new Set(
+      allKeywords.flatMap((k) => tokenizeWords(k).map(normalizeWord))
+    );
+
+    const keywordOnlyFlags = aggregationRows.map((c) =>
+      isKeywordOnlyComment(c.text, allKeywords)
+    );
+    const keywordOnlyCount = keywordOnlyFlags.filter(Boolean).length;
+
+    const wordStats = analyzeCommentTexts(
+      aggregationRows.filter((_, i) => !keywordOnlyFlags[i]).map((c) => c.text),
+      25,
+      WORD_STATS_MIN_COUNT,
+      keywordWordKeys
+    );
+    // Same cap/precedent as wordStats: an exact count would need reading
+    // every comment in the period, not just the aggregation sample.
+    const questionsCount = aggregationRows.filter((c) => isQuestion(c.text)).length;
+
+    // One row per (automation, keyword) with at least one keyword-only
+    // comment, counted over the whole aggregation read (not just the 200
+    // most recent). Only the rows already flagged keyword-only above are
+    // checked against each automation's own keyword list — that is the only
+    // way to know WHICH automation/keyword a keyword-only comment belongs to
+    // (the merged pool above answers "is it keyword-only?", not "whose?").
+    const keywordGroupsByKey = new Map<
+      string,
+      {
+        automationName: string;
+        count: number;
+        lastCommentAt: Date;
+        surfaceForms: Map<string, number>;
+      }
+    >();
+    aggregationRows.forEach((row, i) => {
+      if (!keywordOnlyFlags[i]) return;
+      for (const automation of automations) {
+        if (automation.keywords.length === 0) continue;
+        const match = matchKeywordOnly(row.text, automation.keywords);
+        if (!match) continue;
+
+        const mapKey = `${automation.id}::${match.keyword}`;
+        let group = keywordGroupsByKey.get(mapKey);
+        if (!group) {
+          group = {
+            automationName: automation.name,
+            count: 0,
+            lastCommentAt: row.commentedAt,
+            surfaceForms: new Map(),
+          };
+          keywordGroupsByKey.set(mapKey, group);
+        }
+        group.count += 1;
+        if (row.commentedAt > group.lastCommentAt) group.lastCommentAt = row.commentedAt;
+        group.surfaceForms.set(
+          match.surface,
+          (group.surfaceForms.get(match.surface) ?? 0) + 1
+        );
+        break;
+      }
+    });
+
+    const keywordGroups: CommentsResponse["keywordGroups"] = [...keywordGroupsByKey.values()]
+      .map((group) => {
+        let bestSurface = "";
+        let bestCount = -1;
+        for (const [surface, count] of group.surfaceForms) {
+          if (count > bestCount) {
+            bestCount = count;
+            bestSurface = surface;
+          }
+        }
+        return {
+          keyword: bestSurface,
+          count: group.count,
+          automationName: group.automationName,
+          lastCommentAt: group.lastCommentAt.toISOString(),
+        };
+      })
+      .sort((a, b) => b.count - a.count);
 
     const dmLogs = automationIds.length
       ? await prisma.dmLog.findMany({
@@ -402,6 +514,7 @@ export async function GET(request: NextRequest) {
       mediaId: c.mediaId,
       accountUsername: c.instagramAccount.username,
       isQuestion: isQuestion(c.text),
+      isKeywordOnly: isKeywordOnlyComment(c.text, allKeywords),
     }));
 
     const data: CommentsResponse = {
@@ -413,9 +526,11 @@ export async function GET(request: NextRequest) {
         uniquePeople: uniqueUsernameRows.length,
         questions: questionsCount,
         postsWithComments: rankedPostGroups.length,
+        keywordOnly: keywordOnlyCount,
       },
       wordStats,
       campaigns,
+      keywordGroups,
       comments,
       posts,
     };
